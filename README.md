@@ -12,7 +12,6 @@ Backend service for ingesting and serving [Blend Protocol](https://blend.capital
 - [Real-Time Streaming](#real-time-streaming)
 - [API Endpoints](#api-endpoints)
 - [Database Schema](#database-schema)
-- [Balance Calculation](#balance-calculation)
 - [Configuration](#configuration)
 - [Scripts & Automation](#scripts--automation)
 - [Tracked Pools](#tracked-pools)
@@ -74,8 +73,6 @@ flowchart TB
     end
 
     subgraph API["REST API Layer"]
-        BAL["/api/balance/*"]
-        POS["/api/positions/*"]
         META["/api/metadata"]
         PRICE["/api/cron/prices"]
         HEALTH["/health"]
@@ -115,8 +112,6 @@ backfill_backend/
 │   ├── api/                       # Express server and routes
 │   │   ├── server.ts              # Main Express application
 │   │   └── routes/
-│   │       ├── balance.ts         # Balance API endpoints
-│   │       ├── positions.ts       # Position query endpoints
 │   │       ├── bigquery.ts        # BigQuery integration endpoints
 │   │       ├── goldsky-webhook.ts # Real-time webhook handler
 │   │       └── cron.ts            # Scheduled job endpoints
@@ -203,7 +198,6 @@ Streams contract events as webhooks with HMAC-SHA256 verification.
 **Event Types**:
 - `ResConfig` - Reserve configuration changes
 - `ResData` - Pool rate updates (b_rate, d_rate)
-- `Positions` - User position changes
 
 ### 3. Price Sources
 
@@ -375,7 +369,7 @@ Blockchain Events
 flowchart TB
     subgraph Triggers["Triggers"]
         SCRIPT["npm run<br/>backfill:*"]
-        API["POST /api/<br/>bigquery/backfill"]
+        API["POST /api/<br/>bigquery/backfill-*"]
         CRON["GitHub Actions<br/>Cron"]
     end
 
@@ -434,7 +428,7 @@ Pool snapshots can be backfilled via BigQuery API endpoints or are populated in 
 | `new_auction` | Liquidation auction created |
 | `fill_auction` | Liquidation auction filled |
 
-Pool events are streamed in real-time via Goldsky pipelines directly to the `parsed_events` table.
+Pool events are streamed in real-time via Goldsky pipelines directly to the `blend_actions` table.
 
 ### 3. Backstop Events
 
@@ -517,11 +511,6 @@ flowchart LR
         S["/api/stats"]
     end
 
-    subgraph Balance["Balance APIs"]
-        B1["GET /api/balance/:user/:asset"]
-        B2["GET /api/balance/:user/:asset/history"]
-    end
-
     subgraph Admin["Admin/Backfill APIs"]
         A1["POST /api/bigquery/backfill-pool"]
         A2["POST /api/bigquery/backfill-actions"]
@@ -538,13 +527,6 @@ flowchart LR
         M3["/api/explore"]
     end
 ```
-
-### Balance Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/balance/:user/:asset` | Current balance for user/asset |
-| `GET /api/balance/:user/:asset/history?days=30` | Balance time-series |
 
 ### BigQuery Integration
 
@@ -662,58 +644,6 @@ Backstop pool (insurance) event history.
 PRIMARY KEY: id
 INDEX: idx_backstop_user (user_address, ledger_closed_at)
 ```
-
----
-
-## Balance Calculation
-
-### How Balances Are Computed
-
-```mermaid
-flowchart LR
-    subgraph Stored["Stored Data"]
-        BT["supply_btokens"]
-        CT["collateral_btokens"]
-        DT["liabilities_dtokens"]
-        BR["b_rate"]
-        DR["d_rate"]
-    end
-
-    subgraph Calc["Calculations"]
-        S["Supply Value"]
-        C["Collateral Value"]
-        D["Debt Value"]
-    end
-
-    subgraph Result["Result"]
-        NET["Net Balance"]
-    end
-
-    BT --> |"× b_rate"| S
-    CT --> |"× b_rate"| C
-    DT --> |"× d_rate"| D
-
-    S --> |"+"| NET
-    C --> |"+"| NET
-    D --> |"-"| NET
-```
-
-### Formula
-
-```typescript
-balance = {
-  supply: supply_btokens * b_rate,      // Supplied tokens earning interest
-  collateral: collateral_btokens * b_rate, // Collateral tokens
-  debt: liabilities_dtokens * d_rate,   // Borrowed tokens (growing with interest)
-  net: (supply + collateral) - debt     // Net position value
-}
-```
-
-### Rate Explanation
-
-- **b_rate** (supply rate index): Multiplier that grows over time as interest accrues
-- **d_rate** (debt rate index): Multiplier that grows faster than b_rate (borrowers pay more)
-- Both rates start at ~1.0 and increase over time
 
 ---
 
