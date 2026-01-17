@@ -57,7 +57,6 @@ flowchart TB
 
     subgraph BackfillServices["Backfill Services"]
         PBS["Pool Backfill<br/>Service"]
-        UBS["User Positions<br/>Backfill Service"]
         ABS["Pool Events<br/>Service"]
         BBS["Backstop Events<br/>Service"]
         PCS["Daily Price<br/>Capture Service"]
@@ -69,7 +68,6 @@ flowchart TB
 
     subgraph Database["PostgreSQL Database"]
         PS[("pool_snapshots")]
-        UP[("user_positions")]
         BA[("blend_actions")]
         BE[("backstop_events")]
         DP[("daily_prices")]
@@ -88,7 +86,6 @@ flowchart TB
     end
 
     BQ --> PBS
-    BQ --> UBS
     BQ --> ABS
     BQ --> BBS
     GS --> GWH
@@ -97,15 +94,12 @@ flowchart TB
     EF --> PCS
 
     PBS --> PS
-    UBS --> UP
     ABS --> BA
     BBS --> BE
     PCS --> DP
-    GWH --> UP
     GWH --> PS
 
     PS --> API
-    UP --> API
     BA --> API
     BE --> API
     DP --> API
@@ -128,7 +122,6 @@ backfill_backend/
 │   │       └── cron.ts            # Scheduled job endpoints
 │   ├── services/                  # Business logic layer
 │   │   ├── bigquery-client.ts     # BigQuery query client
-│   │   ├── bigquery-backfill.ts   # User positions backfill
 │   │   ├── bigquery-pool-backfill.ts  # Pool rates backfill
 │   │   ├── bigquery-actions-backfill.ts
 │   │   ├── bigquery-backstop-backfill.ts
@@ -136,7 +129,6 @@ backfill_backend/
 │   │   ├── daily-price-capture.ts # Price snapshot service
 │   │   └── lp-price-backfill.ts
 │   ├── repositories/              # Database access layer
-│   │   ├── user-repository.ts
 │   │   ├── pool-repository.ts
 │   │   ├── actions-repository.ts
 │   │   └── backstop-repository.ts
@@ -181,7 +173,7 @@ flowchart LR
     SC --> BQ
     SC --> GS
 
-    BQ --> |"User Positions<br/>Pool Rates<br/>Actions"| DB[("PostgreSQL")]
+    BQ --> |"Pool Rates<br/>Actions"| DB[("PostgreSQL")]
     GS --> |"Real-time<br/>Events"| DB
     SDK --> |"Current Prices"| DB
     CG --> |"Token Prices"| DB
@@ -196,7 +188,7 @@ BigQuery provides access to historical Stellar blockchain data through Google's 
 
 | Table | Purpose |
 |-------|---------|
-| `contract_data` | User positions, pool rates |
+| `contract_data` | Pool rates |
 | `history_contract_events` | Transaction events, actions |
 
 **Query Modes**:
@@ -289,7 +281,7 @@ This section explains each backfill/data pipeline in the system, what data it ca
 - Pegged currency rates (EUR, GBP stablecoins)
 
 **What it enables:**
-- USD valuation of all user positions
+- USD valuation of all positions
 - Portfolio total value calculations
 - Historical performance and P&L analysis
 - APY calculations in dollar terms
@@ -389,7 +381,6 @@ flowchart TB
 
     subgraph Services["Backfill Services"]
         PB["Pool Backfill"]
-        UB["User Backfill"]
         AB["Pool Events"]
         BB["Backstop Events"]
         PC["Price Capture"]
@@ -426,21 +417,7 @@ flowchart TB
 
 Pool snapshots can be backfilled via BigQuery API endpoints or are populated in real-time by Goldsky.
 
-### 2. User Positions Backfill
-
-**Purpose**: Populate `user_positions` with per-user holdings and debt
-
-**Data Captured**:
-- `supply_btokens` - B-token holdings (supply)
-- `collateral_btokens` - Collateral B-tokens
-- `liabilities_dtokens` - D-tokens owed (debt)
-- `b_rate`, `d_rate` - Rates at time of snapshot
-
-```bash
-npm run backfill:bigquery
-```
-
-### 3. Pool Events
+### 2. Pool Events
 
 **Purpose**: Capture user transaction history
 
@@ -459,7 +436,7 @@ npm run backfill:bigquery
 
 Pool events are streamed in real-time via Goldsky pipelines directly to the `parsed_events` table.
 
-### 4. Backstop Events
+### 3. Backstop Events
 
 **Purpose**: Track backstop pool (insurance) events
 
@@ -471,7 +448,7 @@ Pool events are streamed in real-time via Goldsky pipelines directly to the `par
 
 Backstop events are streamed in real-time via Goldsky pipelines directly to the `backstop_events` table.
 
-### 5. Daily Price Capture
+### 4. Daily Price Capture
 
 **Purpose**: Scheduled daily price snapshots
 
@@ -513,12 +490,6 @@ sequenceDiagram
         WH->>DB: Upsert pool_snapshots
     end
 
-    rect rgb(255, 240, 240)
-        Note over WH,DB: Phase 3: Position Events
-        WH->>Cache: Lookup asset from reserve index
-        WH->>DB: Upsert user_positions
-    end
-
     WH-->>GS: 200 OK with counts
 ```
 
@@ -526,7 +497,6 @@ sequenceDiagram
 
 1. **Phase 1 - ResConfig**: Extract reserve index → asset address mapping, cache in memory
 2. **Phase 2 - ResData (Pool/Rates)**: Extract b_rate, d_rate, create pool snapshots
-3. **Phase 3 - Positions**: Lookup reserve mapping, extract token amounts, create user positions
 
 ### Security
 
@@ -552,17 +522,10 @@ flowchart LR
         B2["GET /api/balance/:user/:asset/history"]
     end
 
-    subgraph Positions["Position APIs"]
-        P1["GET /api/positions/user/:address"]
-        P2["GET /api/positions/bulk"]
-        P3["GET /api/positions/cached/:user/:asset"]
-    end
-
     subgraph Admin["Admin/Backfill APIs"]
-        A1["POST /api/bigquery/backfill"]
-        A2["POST /api/bigquery/backfill-pool"]
-        A3["POST /api/bigquery/backfill-actions"]
-        A4["POST /api/cron/capture-prices"]
+        A1["POST /api/bigquery/backfill-pool"]
+        A2["POST /api/bigquery/backfill-actions"]
+        A3["POST /api/cron/capture-prices"]
     end
 
     subgraph Webhook["Webhook APIs"]
@@ -583,22 +546,10 @@ flowchart LR
 | `GET /api/balance/:user/:asset` | Current balance for user/asset |
 | `GET /api/balance/:user/:asset/history?days=30` | Balance time-series |
 
-### Position Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /api/positions/user/:address` | User positions (direct BigQuery) |
-| `GET /api/positions/user/:address/all-assets` | All assets for user |
-| `GET /api/positions/bulk` | Bulk position query |
-| `GET /api/positions/cached/:user/:asset` | Cached positions from DB |
-
-**Query Parameters**: `pool`, `asset`, `assetIndex`, `startDate`, `endDate`, `daysBack`
-
 ### BigQuery Integration
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /api/bigquery/backfill` | Trigger user positions backfill |
 | `POST /api/bigquery/backfill-pool` | Trigger pool snapshots backfill |
 | `POST /api/bigquery/backfill-actions` | Trigger actions backfill |
 | `GET /api/bigquery/status` | Backfill progress/status |
@@ -650,22 +601,6 @@ erDiagram
         bigint last_time
     }
 
-    user_positions {
-        serial id PK
-        varchar pool_id
-        varchar user_address
-        varchar asset_address
-        date snapshot_date
-        timestamp snapshot_timestamp
-        bigint ledger_sequence
-        numeric supply_btokens
-        numeric collateral_btokens
-        numeric liabilities_dtokens
-        numeric b_rate
-        numeric d_rate
-        varchar entry_hash
-    }
-
     blend_actions {
         text id PK
         varchar pool_id
@@ -700,9 +635,6 @@ erDiagram
         numeric price_usd
         varchar source
     }
-
-    pool_snapshots ||--o{ user_positions : "rates used in"
-    blend_actions }o--|| user_positions : "affects"
 ```
 
 ### Table Details
@@ -713,17 +645,6 @@ Daily interest rates and supply totals per asset.
 ```sql
 UNIQUE(pool_id, asset_address, snapshot_date)
 INDEX: idx_pool_snapshots_lookup (pool_id, asset_address, snapshot_date)
-```
-
-#### user_positions
-Daily user holdings per asset.
-
-```sql
-UNIQUE(pool_id, user_address, asset_address, ledger_sequence)
-INDEXES:
-  - idx_user_positions_lookup (pool_id, user_address, asset_address, snapshot_date)
-  - idx_user_positions_user (user_address, snapshot_date)
-  - idx_user_positions_ledger (ledger_sequence)
 ```
 
 #### blend_actions
@@ -845,7 +766,6 @@ npm start                # Run production server
 npm run setup            # Create tables and indexes
 
 # Backfills
-npm run backfill:bigquery     # User positions from BigQuery
 npm run backfill:lp-prices    # LP token prices
 
 # Note: Pool events and backstop events are handled by Goldsky pipelines
@@ -932,12 +852,7 @@ The frontend is served from the backend Express server in production.
    npm run setup
    ```
 
-4. **Run historical backfill** (optional):
-   ```bash
-   npm run backfill:bigquery
-   ```
-
-5. **Start the server**:
+4. **Start the server**:
    ```bash
    npm run dev
    ```
