@@ -25,7 +25,7 @@ Backend service for ingesting and serving [Blend Protocol](https://blend.capital
 
 The Blend Protocol Backfill Backend is designed to:
 
-1. **Ingest historical data** from BigQuery (Stellar blockchain)
+1. **Ingest historical data** from Hubble (Stellar's public blockchain data on BigQuery)
 2. **Stream real-time events** from Goldsky webhooks
 3. **Store normalized data** in PostgreSQL for fast querying
 4. **Serve data** via REST APIs for frontends and external services
@@ -36,7 +36,7 @@ The Blend Protocol Backfill Backend is designed to:
 - **Runtime**: Node.js 18+ with TypeScript
 - **Web Framework**: Express.js
 - **Database**: PostgreSQL (Neon serverless supported)
-- **Data Sources**: Google BigQuery, Goldsky
+- **Data Sources**: Hubble (BigQuery), Goldsky
 - **Blockchain SDK**: Blend Capital SDK + Stellar Soroban RPC
 
 ---
@@ -48,7 +48,7 @@ The Blend Protocol Backfill Backend is designed to:
 ```mermaid
 flowchart TB
     subgraph DataSources["Data Sources"]
-        BQ["BigQuery<br/>(crypto-stellar dataset)"]
+        BQ["Hubble<br/>(Stellar BigQuery)"]
         GS["Goldsky<br/>(Real-time streaming)"]
         SDK["Blend SDK<br/>(Current state)"]
         CG["CoinGecko<br/>(Prices)"]
@@ -160,7 +160,7 @@ flowchart LR
     end
 
     subgraph Indexers["Data Indexers"]
-        BQ["BigQuery<br/>(Historical)"]
+        BQ["Hubble<br/>(Historical)"]
         GS["Goldsky<br/>(Real-time)"]
     end
 
@@ -180,11 +180,11 @@ flowchart LR
     EF --> |"Bond Prices"| DB
 ```
 
-### 1. BigQuery (Google Cloud)
+### 1. Hubble (Stellar's BigQuery Data)
 
 **Dataset**: `crypto-stellar:crypto_stellar`
 
-BigQuery provides access to historical Stellar blockchain data through Google's public crypto dataset.
+[Hubble](https://developers.stellar.org/docs/data/hubble) is the Stellar Development Foundation's public blockchain data, available on Google BigQuery. It provides access to historical Stellar blockchain data including smart contract state and events.
 
 | Table | Purpose |
 |-------|---------|
@@ -829,7 +829,7 @@ The frontend is served from the backend Express server in production.
 - Node.js 18+
 - PostgreSQL database (or [Neon](https://neon.tech/) serverless Postgres)
 - One or more data sources:
-  - Google Cloud account with BigQuery access
+  - Google Cloud account with BigQuery access (for Hubble data)
   - Goldsky account for real-time streaming
 
 ---
