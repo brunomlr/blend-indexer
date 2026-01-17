@@ -1,0 +1,189 @@
+name: backstop-events
+version: 2
+resource_size: m
+apiVersion: 3
+sources:
+  stellar.events:
+    dataset_name: stellar.events
+    version: 3.2.0
+    type: dataset
+    start_at: latest
+transforms:
+  backstop_events:
+    type: sql
+    primary_key: id
+    sql: |-
+      SELECT * FROM stellar.events
+      WHERE type = 'contract'
+        AND in_successful_contract_call = true
+        AND contract_id = 'CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7'
+  parsed_backstop_events:
+    type: sql
+    primary_key: id
+    sql: |-
+      SELECT
+        -- Construct ID using content hash of PARSED values: {ledger}-{hash16}
+        -- Hash uses the same parsed values that get stored in the database
+        CONCAT(
+          CAST(ledger_sequence AS VARCHAR), '-',
+          SUBSTRING(SHA2(CONCAT(
+            COALESCE(transaction_hash, ''),
+            -- action_type
+            COALESCE(JSON_VALUE(topics, '$[0].symbol'), ''),
+            -- pool_address (NULL for claim)
+            COALESCE(CASE
+              WHEN JSON_VALUE(topics, '$[0].symbol') = 'claim' THEN NULL
+              ELSE JSON_VALUE(topics, '$[1].address')
+            END, ''),
+            -- user_address
+            COALESCE(CASE
+              WHEN JSON_VALUE(topics, '$[0].symbol') = 'claim' THEN JSON_VALUE(topics, '$[1].address')
+              WHEN JSON_VALUE(topics, '$[0].symbol') IN ('gulp_emissions', 'draw') THEN NULL
+              ELSE JSON_VALUE(topics, '$[2].address')
+            END, ''),
+            -- lp_tokens (as string)
+            COALESCE(CASE
+              WHEN JSON_VALUE(topics, '$[0].symbol') = 'deposit' THEN COALESCE(JSON_VALUE(data, '$.vec[0].i128'), JSON_VALUE(data, '$.vec[0].i128.lo'))
+              WHEN JSON_VALUE(topics, '$[0].symbol') = 'withdraw' THEN COALESCE(JSON_VALUE(data, '$.vec[1].i128'), JSON_VALUE(data, '$.vec[1].i128.lo'))
+              WHEN JSON_VALUE(topics, '$[0].symbol') IN ('claim', 'donate') THEN COALESCE(JSON_VALUE(data, '$.i128'), JSON_VALUE(data, '$.i128.lo'))
+              ELSE NULL
+            END, ''),
+            -- shares (as string)
+            COALESCE(CASE
+              WHEN JSON_VALUE(topics, '$[0].symbol') = 'deposit' THEN COALESCE(JSON_VALUE(data, '$.vec[1].i128'), JSON_VALUE(data, '$.vec[1].i128.lo'))
+              WHEN JSON_VALUE(topics, '$[0].symbol') IN ('withdraw', 'queue_withdrawal') THEN COALESCE(JSON_VALUE(data, '$.vec[0].i128'), JSON_VALUE(data, '$.vec[0].i128.lo'))
+              WHEN JSON_VALUE(topics, '$[0].symbol') = 'dequeue_withdrawal' THEN COALESCE(JSON_VALUE(data, '$.i128'), JSON_VALUE(data, '$.i128.lo'))
+              ELSE NULL
+            END, ''),
+            -- q4w_exp (as string)
+            COALESCE(CASE
+              WHEN JSON_VALUE(topics, '$[0].symbol') = 'queue_withdrawal' THEN JSON_VALUE(data, '$.vec[1].u64')
+              ELSE NULL
+            END, ''),
+            -- emissions_amount (as string)
+            COALESCE(CASE
+              WHEN JSON_VALUE(topics, '$[0].symbol') = 'gulp_emissions' THEN COALESCE(JSON_VALUE(data, '$.vec[0].i128'), JSON_VALUE(data, '$.vec[0].i128.lo'))
+              ELSE NULL
+            END, ''),
+            -- emissions_shares (as string)
+            COALESCE(CASE
+              WHEN JSON_VALUE(topics, '$[0].symbol') = 'gulp_emissions' THEN COALESCE(JSON_VALUE(data, '$.vec[1].i128'), JSON_VALUE(data, '$.vec[1].i128.lo'))
+              ELSE NULL
+            END, '')
+          ), 256), 1, 16)
+        ) AS id,
+        transaction_hash,
+        ledger_sequence,
+        ledger_closed_at,
+
+        -- Action type
+        JSON_VALUE(topics, '$[0].symbol') AS action_type,
+
+        -- Pool address (NULL for claim - claim is global across all pools)
+        CASE
+          WHEN JSON_VALUE(topics, '$[0].symbol') = 'claim'
+          THEN NULL
+          ELSE JSON_VALUE(topics, '$[1].address')
+        END AS pool_address,
+
+        -- User address
+        CASE
+          WHEN JSON_VALUE(topics, '$[0].symbol') = 'claim'
+          THEN JSON_VALUE(topics, '$[1].address')
+          WHEN JSON_VALUE(topics, '$[0].symbol') IN ('gulp_emissions', 'draw')
+          THEN NULL
+          ELSE JSON_VALUE(topics, '$[2].address')
+        END AS user_address,
+
+        -- LP tokens amount
+        CASE
+          WHEN JSON_VALUE(topics, '$[0].symbol') = 'deposit'
+          THEN CAST(COALESCE(
+            JSON_VALUE(data, '$.vec[0].i128'),
+            JSON_VALUE(data, '$.vec[0].i128.lo')
+          ) AS DECIMAL)
+          WHEN JSON_VALUE(topics, '$[0].symbol') = 'withdraw'
+          THEN CAST(COALESCE(
+            JSON_VALUE(data, '$.vec[1].i128'),
+            JSON_VALUE(data, '$.vec[1].i128.lo')
+          ) AS DECIMAL)
+          WHEN JSON_VALUE(topics, '$[0].symbol') IN ('claim', 'donate')
+          THEN CAST(COALESCE(
+            JSON_VALUE(data, '$.i128'),
+            JSON_VALUE(data, '$.i128.lo')
+          ) AS DECIMAL)
+          ELSE NULL
+        END AS lp_tokens,
+
+        -- Shares amount
+        CASE
+          WHEN JSON_VALUE(topics, '$[0].symbol') = 'deposit'
+          THEN CAST(COALESCE(
+            JSON_VALUE(data, '$.vec[1].i128'),
+            JSON_VALUE(data, '$.vec[1].i128.lo')
+          ) AS DECIMAL)
+          WHEN JSON_VALUE(topics, '$[0].symbol') IN ('withdraw', 'queue_withdrawal')
+          THEN CAST(COALESCE(
+            JSON_VALUE(data, '$.vec[0].i128'),
+            JSON_VALUE(data, '$.vec[0].i128.lo')
+          ) AS DECIMAL)
+          WHEN JSON_VALUE(topics, '$[0].symbol') = 'dequeue_withdrawal'
+          THEN CAST(COALESCE(
+            JSON_VALUE(data, '$.i128'),
+            JSON_VALUE(data, '$.i128.lo')
+          ) AS DECIMAL)
+          ELSE NULL
+        END AS shares,
+
+        -- Queue expiration timestamp (queue_withdrawal only)
+        CASE
+          WHEN JSON_VALUE(topics, '$[0].symbol') = 'queue_withdrawal'
+          THEN CAST(JSON_VALUE(data, '$.vec[1].u64') AS BIGINT)
+          ELSE NULL
+        END AS q4w_exp,
+
+        -- Emissions amount (gulp_emissions only) - BLND tokens gulped
+        CASE
+          WHEN JSON_VALUE(topics, '$[0].symbol') = 'gulp_emissions'
+          THEN CAST(COALESCE(
+            JSON_VALUE(data, '$.vec[0].i128'),
+            JSON_VALUE(data, '$.vec[0].i128.lo')
+          ) AS DECIMAL)
+          ELSE NULL
+        END AS emissions_amount,
+
+        -- Emissions shares (gulp_emissions only) - shares/tokens delta
+        CASE
+          WHEN JSON_VALUE(topics, '$[0].symbol') = 'gulp_emissions'
+          THEN CAST(COALESCE(
+            JSON_VALUE(data, '$.vec[1].i128'),
+            JSON_VALUE(data, '$.vec[1].i128.lo')
+          ) AS DECIMAL)
+          ELSE NULL
+        END AS emissions_shares,
+
+        -- Data source marker
+        'gs' AS src
+
+      FROM backstop_events
+      WHERE JSON_VALUE(topics, '$[0].symbol') IN (
+        'deposit',
+        'withdraw',
+        'queue_withdrawal',
+        'dequeue_withdrawal',
+        'claim',
+        'donate',
+        'draw',
+        'gulp_emissions'
+      )
+sinks:
+  sink_1:
+    type: postgres
+    table: backstop_events
+    schema: public
+    secret_name: xxx
+    scan_autocommit: false
+    from: parsed_backstop_events
+    batch_size: 100
+    rewrite_batched_inserts: false
+use_dedicated_ip: false

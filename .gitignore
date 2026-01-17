@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+.claude/
+
+# Credentials and service account keys
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+
+# Backup and development files
+*.backup
+*.bak
+*.FIXED.*
+
+# Development SQL files
+*.sql
+subquery-indexer/.data

@@ -1,0 +1,41 @@
+name: Daily Price Capture
+
+on:
+  schedule:
+    # Run daily at midnight UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  capture-prices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Capture daily prices
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}
+        run: npx ts-node src/scripts/capture-daily-prices.ts
+
+      - name: Calculate daily BLND emission APY
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}
+        run: npx ts-node src/scripts/backfill-emission-apy.ts --today
+
+      - name: Summary
+        if: always()
+        run: echo "Daily price capture and emission APY calculation completed at $(date -u)"

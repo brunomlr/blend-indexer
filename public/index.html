@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blend Protocol Backfill</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #718096;
+            margin-bottom: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            color: #4a5568;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 14px 28px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+
+        .estimate-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .estimate-box {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .estimate-box .label {
+            font-size: 12px;
+            color: #718096;
+            margin-bottom: 5px;
+        }
+
+        .estimate-box .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2d3748;
+        }
+
+        .estimate-box .unit {
+            font-size: 14px;
+            color: #a0aec0;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: #718096;
+            margin-top: 5px;
+        }
+
+        .button-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .result-success {
+            background: #c6f6d5;
+            border-left: 4px solid #38a169;
+            color: #22543d;
+        }
+
+        .result-error {
+            background: #fed7d7;
+            border-left: 4px solid #e53e3e;
+            color: #742a2a;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Blend Actions Backfill Card -->
+        <div class="card">
+            <h1>Blend Actions Backfill</h1>
+            <p class="subtitle">Backfill action events (supply, withdraw, borrow, repay, claim) from BigQuery</p>
+
+            <div id="actions-config-info" style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div>
+                        <div style="font-size: 12px; color: #718096; margin-bottom: 5px;">Tracked Pools</div>
+                        <div id="actions-tracked-pools" style="font-size: 13px; color: #4a5568;">Loading...</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 12px; color: #718096; margin-bottom: 5px;">Action Types</div>
+                        <div id="actions-action-types" style="font-size: 13px; color: #4a5568;">Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <form id="actions-backfill-form" style="margin-bottom: 20px;">
+                <div class="form-group">
+                    <label for="actionsRangeType">Range Type</label>
+                    <select id="actionsRangeType" onchange="updateActionsDateFields()">
+                        <option value="days">Days Back (from today)</option>
+                        <option value="dateRange">Specific Date Range</option>
+                        <option value="ledgerRange">Ledger Range</option>
+                    </select>
+                </div>
+
+                <div id="actionsDaysBackField" class="form-group">
+                    <label for="actionsDaysBack">Days Back</label>
+                    <input type="number" id="actionsDaysBack" value="30" min="1">
+                    <div class="help-text">Number of days to look back from today</div>
+                </div>
+
+                <div id="actionsDateRangeFields" class="form-row" style="display: none;">
+                    <div class="form-group">
+                        <label for="actionsStartDate">Start Date</label>
+                        <input type="date" id="actionsStartDate">
+                    </div>
+                    <div class="form-group">
+                        <label for="actionsEndDate">End Date</label>
+                        <input type="date" id="actionsEndDate">
+                    </div>
+                </div>
+
+                <div id="actionsLedgerRangeFields" class="form-row" style="display: none;">
+                    <div class="form-group">
+                        <label for="actionsStartLedger">Start Ledger</label>
+                        <input type="number" id="actionsStartLedger" placeholder="e.g., 50000000">
+                    </div>
+                    <div class="form-group">
+                        <label for="actionsEndLedger">End Ledger</label>
+                        <input type="number" id="actionsEndLedger" placeholder="e.g., 51000000">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="actionsLimit">Row Limit (optional)</label>
+                    <input type="number" id="actionsLimit" placeholder="Leave empty for all rows">
+                    <div class="help-text">Limit the number of rows to fetch (useful for testing)</div>
+                </div>
+
+                <!-- Action buttons -->
+                <div id="actions-simulate-section">
+                    <div class="button-group">
+                        <button type="button" class="btn btn-secondary" id="actions-estimate-btn" onclick="getActionsEstimate()">
+                            Get Cost Estimate
+                        </button>
+                        <button type="button" class="btn btn-secondary" id="actions-simulate-btn" onclick="simulateActionsBackfill()">
+                            Preview Data
+                        </button>
+                        <button type="button" class="btn" id="actions-run-btn" onclick="runActionsBackfill()">
+                            Run Backfill
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Estimate Result -->
+                <div id="actions-estimate-result" style="display: none; margin-top: 20px; padding: 20px; border-radius: 8px; background: #ebf8ff; border-left: 4px solid #3182ce;">
+                    <h3 style="color: #2c5282; margin-bottom: 15px;">Cost Estimate</h3>
+                    <div class="estimate-grid">
+                        <div class="estimate-box">
+                            <div class="label">Data to Process</div>
+                            <div class="value" id="actions-estimate-gb">-</div>
+                            <div class="unit">GB</div>
+                        </div>
+                        <div class="estimate-box">
+                            <div class="label">Estimated Cost</div>
+                            <div class="value" id="actions-estimate-cost">-</div>
+                            <div class="unit">USD</div>
+                        </div>
+                        <div class="estimate-box">
+                            <div class="label">Free Tier</div>
+                            <div class="value">1 TB</div>
+                            <div class="unit">per month</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Simulate Result -->
+                <div id="actions-simulate-result" style="display: none; margin-top: 20px; padding: 20px; border-radius: 8px; background: #f0fff4; border-left: 4px solid #38a169;">
+                    <h3 style="color: #22543d; margin-bottom: 15px;">Simulation Results (Preview)</h3>
+                    <div style="margin-bottom: 15px;">
+                        <span style="font-size: 14px; color: #4a5568;">Rows fetched: </span>
+                        <strong id="actions-simulate-count">0</strong>
+                        <span style="font-size: 12px; color: #718096;"> (estimated cost: $<span id="actions-simulate-cost">0</span>)</span>
+                    </div>
+                    <div id="actions-simulate-data" style="max-height: 300px; overflow-y: auto; background: white; border-radius: 8px; padding: 10px;">
+                    </div>
+                </div>
+
+            </form>
+
+            <div id="actions-backfill-result" style="display: none; margin-top: 20px; padding: 20px; border-radius: 8px;"></div>
+        </div>
+
+        <!-- Sync Pools & Tokens Card -->
+        <div class="card">
+            <h1>Sync Pools & Tokens</h1>
+            <p class="subtitle">Update reference tables from TRACKED_POOLS config and discovered tokens</p>
+
+            <div id="sync-stats" style="background: #f7fafc; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px;">
+                    <div>
+                        <div style="font-size: 12px; color: #718096; margin-bottom: 5px;">Tracked Pools (Config)</div>
+                        <div style="font-size: 20px; font-weight: bold; color: #2d3748;" id="sync-tracked-pools">-</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 12px; color: #718096; margin-bottom: 5px;">Pools in DB</div>
+                        <div style="font-size: 20px; font-weight: bold; color: #2d3748;" id="sync-pools-count">-</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 12px; color: #718096; margin-bottom: 5px;">Tokens in DB</div>
+                        <div style="font-size: 20px; font-weight: bold; color: #2d3748;" id="sync-tokens-count">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="background: #fef5e7; border-left: 4px solid #ed8936; padding: 12px; border-radius: 4px; margin-bottom: 20px; font-size: 13px; color: #744210;">
+                <strong>When to use:</strong> Run this after backfilling data to ensure the pools and tokens reference tables are up to date. This syncs:
+                <ul style="margin: 8px 0 0 20px;">
+                    <li><strong>Pools:</strong> from TRACKED_POOLS configuration</li>
+                    <li><strong>Tokens:</strong> discovered from events tables + Blend SDK metadata</li>
+                </ul>
+            </div>
+
+            <button type="button" class="btn" id="sync-run-btn" onclick="runSync()">
+                Sync Pools & Tokens
+            </button>
+
+            <div id="sync-result" style="display: none; margin-top: 20px; padding: 20px; border-radius: 8px;"></div>
+        </div>
+    </div>
+
+    <script>
+        // Actions Backfill Functions
+        let actionsEstimateData = null;
+        let actionsSimulateData = null;
+
+        function updateActionsDateFields() {
+            const rangeType = document.getElementById('actionsRangeType').value;
+            document.getElementById('actionsDaysBackField').style.display = rangeType === 'days' ? 'block' : 'none';
+            document.getElementById('actionsDateRangeFields').style.display = rangeType === 'dateRange' ? 'grid' : 'none';
+            document.getElementById('actionsLedgerRangeFields').style.display = rangeType === 'ledgerRange' ? 'grid' : 'none';
+        }
+
+        function buildActionsPayload() {
+            const rangeType = document.getElementById('actionsRangeType').value;
+            const payload = {};
+
+            if (rangeType === 'days') {
+                const daysBack = parseInt(document.getElementById('actionsDaysBack').value);
+                if (daysBack && daysBack > 0) {
+                    const endDate = new Date();
+                    const startDate = new Date();
+                    startDate.setDate(startDate.getDate() - daysBack);
+                    payload.startDate = startDate.toISOString().split('T')[0];
+                    payload.endDate = endDate.toISOString().split('T')[0];
+                }
+            } else if (rangeType === 'dateRange') {
+                const startDate = document.getElementById('actionsStartDate').value;
+                const endDate = document.getElementById('actionsEndDate').value;
+                if (startDate) payload.startDate = startDate;
+                if (endDate) payload.endDate = endDate;
+            } else if (rangeType === 'ledgerRange') {
+                const startLedger = document.getElementById('actionsStartLedger').value;
+                const endLedger = document.getElementById('actionsEndLedger').value;
+                if (startLedger) payload.startLedger = parseInt(startLedger);
+                if (endLedger) payload.endLedger = parseInt(endLedger);
+            }
+
+            const limit = document.getElementById('actionsLimit').value;
+            if (limit) payload.limit = parseInt(limit);
+
+            return payload;
+        }
+
+        async function loadActionsConfig() {
+            try {
+                const response = await fetch('/api/bigquery/actions/config');
+                const data = await response.json();
+
+                if (data.success) {
+                    document.getElementById('actions-tracked-pools').innerHTML = data.tracked_pools.map(p => `<div>${p.substring(0, 8)}...</div>`).join('');
+                    document.getElementById('actions-action-types').innerHTML = data.action_types.join(', ');
+                }
+            } catch (error) {
+                console.error('Failed to load actions config:', error);
+            }
+        }
+
+        async function getActionsEstimate() {
+            const btn = document.getElementById('actions-estimate-btn');
+            const estimateResult = document.getElementById('actions-estimate-result');
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Estimating...';
+
+            try {
+                const payload = buildActionsPayload();
+                const response = await fetch('/api/bigquery/actions/estimate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    actionsEstimateData = data;
+                    document.getElementById('actions-estimate-gb').textContent = data.gb;
+                    document.getElementById('actions-estimate-cost').textContent = '$' + data.cost;
+                    estimateResult.style.display = 'block';
+
+                    if (data.warning) alert(data.warning);
+                } else {
+                    alert('Failed to get estimate: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error getting estimate: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Get Cost Estimate';
+            }
+        }
+
+        async function simulateActionsBackfill() {
+            const btn = document.getElementById('actions-simulate-btn');
+            const simulateResult = document.getElementById('actions-simulate-result');
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Loading...';
+            simulateResult.style.display = 'none';
+
+            try {
+                const payload = buildActionsPayload();
+                if (!payload.limit) payload.limit = 100;
+
+                const response = await fetch('/api/bigquery/actions/simulate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    actionsSimulateData = data;
+                    document.getElementById('actions-simulate-count').textContent = data.rows_count;
+                    document.getElementById('actions-simulate-cost').textContent = data.estimated_cost;
+
+                    const dataDiv = document.getElementById('actions-simulate-data');
+                    if (data.rows && data.rows.length > 0) {
+                        let tableHTML = `
+                            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                                <thead>
+                                    <tr style="background: #f7fafc;">
+                                        <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e2e8f0;">Action</th>
+                                        <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e2e8f0;">User</th>
+                                        <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e2e8f0;">Asset</th>
+                                        <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">Amount</th>
+                                        <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">Ledger</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                        `;
+
+                        data.rows.forEach(row => {
+                            tableHTML += `
+                                <tr>
+                                    <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">
+                                        <span style="background: ${getActionColor(row.action_type)}; color: white; padding: 2px 6px; border-radius: 4px; font-size: 11px;">
+                                            ${row.action_type}
+                                        </span>
+                                    </td>
+                                    <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-family: monospace;">
+                                        ${row.user_address ? row.user_address.substring(0, 8) + '...' : '-'}
+                                    </td>
+                                    <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; font-family: monospace;">
+                                        ${row.asset_address ? row.asset_address.substring(0, 8) + '...' : '-'}
+                                    </td>
+                                    <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: right;">
+                                        ${row.amount_underlying ? formatNumber(row.amount_underlying) : '-'}
+                                    </td>
+                                    <td style="padding: 8px; border-bottom: 1px solid #e2e8f0; text-align: right; font-family: monospace;">
+                                        ${row.ledger_sequence}
+                                    </td>
+                                </tr>
+                            `;
+                        });
+
+                        tableHTML += '</tbody></table>';
+                        dataDiv.innerHTML = tableHTML;
+                    } else {
+                        dataDiv.innerHTML = '<div style="text-align: center; color: #718096; padding: 20px;">No data found</div>';
+                    }
+
+                    simulateResult.style.display = 'block';
+                } else {
+                    alert('Preview failed: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error during preview: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Preview Data';
+            }
+        }
+
+        async function runActionsBackfill() {
+            const btn = document.getElementById('actions-run-btn');
+            const resultDiv = document.getElementById('actions-backfill-result');
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Running...';
+            resultDiv.style.display = 'none';
+
+            try {
+                const payload = buildActionsPayload();
+                const response = await fetch('/api/bigquery/actions/backfill', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    resultDiv.className = 'result-success';
+                    resultDiv.innerHTML = `
+                        <strong>Backfill Successful</strong><br><br>
+                        <div>
+                            Rows fetched: <strong>${data.rows_fetched.toLocaleString()}</strong><br>
+                            Rows inserted: <strong>${data.rows_inserted.toLocaleString()}</strong><br>
+                            Rows updated: <strong>${data.rows_updated.toLocaleString()}</strong><br>
+                            Estimated cost: <strong>$${data.estimated_cost}</strong>
+                        </div>
+                        <div style="margin-top: 20px;">
+                            <button type="button" class="btn btn-secondary" onclick="resetActionsForm()">Run Another</button>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.className = 'result-error';
+                    resultDiv.innerHTML = `
+                        <strong>Backfill Failed</strong><br><br>
+                        <div>${data.error || 'Unknown error'}</div>
+                        <div style="margin-top: 20px;">
+                            <button type="button" class="btn btn-secondary" onclick="resetActionsForm()">Try Again</button>
+                        </div>
+                    `;
+                }
+
+                resultDiv.style.display = 'block';
+            } catch (error) {
+                resultDiv.className = 'result-error';
+                resultDiv.innerHTML = `
+                    <strong>Error</strong><br><br>
+                    <div>${error.message}</div>
+                    <div style="margin-top: 20px;">
+                        <button type="button" class="btn btn-secondary" onclick="resetActionsForm()">Try Again</button>
+                    </div>
+                `;
+                resultDiv.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Run Backfill';
+            }
+        }
+
+        function resetActionsForm() {
+            actionsEstimateData = null;
+            actionsSimulateData = null;
+            document.getElementById('actions-estimate-result').style.display = 'none';
+            document.getElementById('actions-simulate-result').style.display = 'none';
+            document.getElementById('actions-backfill-result').style.display = 'none';
+        }
+
+        function getActionColor(actionType) {
+            const colors = {
+                'supply': '#38a169',
+                'withdraw': '#e53e3e',
+                'supply_collateral': '#3182ce',
+                'withdraw_collateral': '#dd6b20',
+                'borrow': '#805ad5',
+                'repay': '#d69e2e',
+                'claim': '#319795',
+            };
+            return colors[actionType] || '#718096';
+        }
+
+        function formatNumber(num) {
+            if (!num) return '-';
+            const n = parseFloat(num);
+            if (n >= 1e12) return (n / 1e12).toFixed(2) + 'T';
+            if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+            if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+            return n.toFixed(2);
+        }
+
+        // Sync Pools & Tokens Functions
+        async function loadSyncStats() {
+            try {
+                const response = await fetch('/api/bigquery/sync/stats');
+                const data = await response.json();
+
+                if (data.success) {
+                    document.getElementById('sync-tracked-pools').textContent = data.trackedPoolsCount;
+                    document.getElementById('sync-pools-count').textContent = data.poolsCount;
+                    document.getElementById('sync-tokens-count').textContent = data.tokensCount;
+                }
+            } catch (error) {
+                console.error('Failed to load sync stats:', error);
+            }
+        }
+
+        async function runSync() {
+            const btn = document.getElementById('sync-run-btn');
+            const resultDiv = document.getElementById('sync-result');
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Syncing...';
+            resultDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('/api/bigquery/sync/run', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    resultDiv.style.background = '#c6f6d5';
+                    resultDiv.style.borderLeft = '4px solid #38a169';
+
+                    let errorsHTML = '';
+                    if (data.pools_errors && data.pools_errors.length > 0) {
+                        errorsHTML += `<div style="margin-top: 10px; color: #c53030;">Pool errors: ${data.pools_errors.join(', ')}</div>`;
+                    }
+                    if (data.tokens_errors && data.tokens_errors.length > 0) {
+                        errorsHTML += `<div style="margin-top: 10px; color: #c53030;">Token errors: ${data.tokens_errors.length} errors</div>`;
+                    }
+
+                    resultDiv.innerHTML = `
+                        <strong style="color: #22543d;">Sync Successful</strong><br><br>
+                        <div style="color: #2d3748;">
+                            Pools synced: <strong>${data.pools_synced}</strong><br>
+                            Tokens inserted: <strong>${data.tokens_inserted}</strong><br>
+                            Tokens updated: <strong>${data.tokens_updated}</strong>
+                        </div>
+                        ${errorsHTML}
+                        <div style="margin-top: 20px;">
+                            <button type="button" class="btn btn-secondary" onclick="runSync()">Run Again</button>
+                        </div>
+                    `;
+
+                    loadSyncStats();
+                } else {
+                    resultDiv.style.background = '#fed7d7';
+                    resultDiv.style.borderLeft = '4px solid #e53e3e';
+                    resultDiv.innerHTML = `
+                        <strong style="color: #742a2a;">Sync Failed</strong><br><br>
+                        <div style="color: #c53030;">${data.error || 'Unknown error'}</div>
+                        <div style="margin-top: 20px;">
+                            <button type="button" class="btn btn-secondary" onclick="runSync()">Try Again</button>
+                        </div>
+                    `;
+                }
+
+                resultDiv.style.display = 'block';
+            } catch (error) {
+                resultDiv.style.background = '#fed7d7';
+                resultDiv.style.borderLeft = '4px solid #e53e3e';
+                resultDiv.innerHTML = `
+                    <strong style="color: #742a2a;">Error</strong><br><br>
+                    <div style="color: #c53030;">${error.message}</div>
+                    <div style="margin-top: 20px;">
+                        <button type="button" class="btn btn-secondary" onclick="runSync()">Try Again</button>
+                    </div>
+                `;
+                resultDiv.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = 'Sync Pools & Tokens';
+            }
+        }
+
+        // Load on page load
+        loadActionsConfig();
+        loadSyncStats();
+    </script>
+</body>
+</html>
