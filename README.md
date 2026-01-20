@@ -58,7 +58,8 @@ flowchart TB
         PBS["Pool Backfill<br/>Service"]
         ABS["Pool Events<br/>Service"]
         BBS["Backstop Events<br/>Service"]
-        PCS["Daily Price<br/>Capture Service"]
+        PCS["Daily Data<br/>Capture Service"]
+        BQS["Backstop Q4W<br/>Service"]
     end
 
     subgraph WebhookHandler["Real-Time Handler"]
@@ -70,6 +71,7 @@ flowchart TB
         BA[("blend_actions")]
         BE[("backstop_events")]
         DP[("daily_prices")]
+        BPS[("backstop_pool_snapshots")]
     end
 
     subgraph API["REST API Layer"]
@@ -85,8 +87,10 @@ flowchart TB
     BQ --> PBS
     BQ --> ABS
     BQ --> BBS
+    BQ --> BQS
     GS --> GWH
     SDK --> PCS
+    SDK --> BQS
     CG --> PCS
     EF --> PCS
 
@@ -94,12 +98,14 @@ flowchart TB
     ABS --> BA
     BBS --> BE
     PCS --> DP
+    BQS --> BPS
     GWH --> PS
 
     PS --> API
     BA --> API
     BE --> API
     DP --> API
+    BPS --> API
 
     API --> Frontend
 ```
@@ -120,13 +126,15 @@ backfill_backend/
 │   │   ├── bigquery-pool-backfill.ts  # Pool rates backfill
 │   │   ├── bigquery-actions-backfill.ts
 │   │   ├── bigquery-backstop-backfill.ts
+│   │   ├── backstop-q4w-backfill.ts   # Backstop Q4W percentage backfill
 │   │   ├── goldsky-webhook-handler.ts
 │   │   ├── daily-price-capture.ts # Price snapshot service
 │   │   └── lp-price-backfill.ts
 │   ├── repositories/              # Database access layer
 │   │   ├── pool-repository.ts
 │   │   ├── actions-repository.ts
-│   │   └── backstop-repository.ts
+│   │   ├── backstop-repository.ts
+│   │   └── backstop-pool-snapshot-repository.ts
 │   ├── lib/blend/                 # Blend Protocol utilities
 │   │   ├── discovery.ts           # Dynamic pool/asset discovery
 │   │   ├── network.ts             # Stellar network configuration
@@ -302,7 +310,34 @@ BLND tokens are distributed as incentives to protocol participants. This backfil
 - Comparison of earning opportunities across pools and assets
 - Understanding the "real" yield (base rate + BLND incentives)
 
-### 7. Daily Price Capture
+### 7. Backstop Q4W Percentage Backfill (backstop_pool_snapshots table)
+
+The Backstop Q4W (Queue for Withdrawal) percentage tracks what portion of backstop deposits are queued to be withdrawn. This is a key metric for monitoring backstop health and liquidity.
+
+**What it captures:**
+- Daily snapshots of each backstop pool's balance data:
+  - **shares**: Total backstop shares in the pool
+  - **tokens**: Total LP tokens deposited
+  - **q4w**: Shares queued for withdrawal
+  - **q4w_pct**: Calculated percentage `(q4w / shares) × 100`
+- Data sources: Historical from Hubble BigQuery (`contract_data` table), real-time from Blend SDK
+
+**How it's calculated:**
+- Q4W Percentage = (queued_shares / total_shares) × 100
+- A higher Q4W percentage indicates more users are planning to exit the backstop
+- Typically healthy pools have Q4W below 10%
+
+**What it enables:**
+- Monitoring of backstop liquidity health per pool
+- Early warning indicators when many users queue withdrawals
+- Historical analysis of backstop stability
+- Risk assessment for backstop depositors
+
+**Data Sources:**
+- **Historical**: BigQuery `contract_data` table with storage key `PoolBalance`
+- **Real-time**: Daily capture from Blend SDK via GitHub Actions
+
+### 8. Daily Data Capture
 
 **What it captures:**
 - Automated daily snapshot of all token prices
@@ -310,13 +345,15 @@ BLND tokens are distributed as incentives to protocol participants. This backfil
 - BLND price from pool ratio
 - Reserve token prices from oracles
 - External prices from CoinGecko and Etherfuse
+- Backstop pool snapshots (shares, tokens, q4w) via SDK
 
 **What it enables:**
 - Up-to-date portfolio valuations
 - Continuous price history without gaps
 - Reliable source of truth for current prices
+- Real-time backstop Q4W tracking
 
-### 8. Pools & Tokens Sync
+### 9. Pools & Tokens Sync
 
 **What it captures:**
 - Reference data for all tracked pools
@@ -346,6 +383,9 @@ Blockchain Events
                 │
                 │
        Emission APY ─────────────────► Total Yield Calculations
+                │
+                │
+       Backstop Q4W ─────────────────► Backstop Health Monitoring
 ```
 
 ### Key Use Cases Enabled
@@ -358,6 +398,7 @@ Blockchain Events
 | Track backstop rewards | Backstop Events, LP Prices, BLND Price |
 | Historical portfolio value | Pool Events, Token Prices (all dates) |
 | Liquidation monitoring | Pool Events (auction events) |
+| Monitor backstop health | Backstop Q4W Snapshots |
 
 ---
 
@@ -536,6 +577,9 @@ flowchart LR
 | `POST /api/bigquery/backfill-actions` | Trigger actions backfill |
 | `GET /api/bigquery/status` | Backfill progress/status |
 | `GET /api/bigquery/discover` | Discover pools and assets |
+| `GET /api/bigquery/backstop-q4w/stats` | Get backstop Q4W snapshot stats |
+| `GET /api/bigquery/backstop-q4w/data` | Get backstop Q4W data |
+| `POST /api/bigquery/backstop-q4w/backfill` | Trigger backstop Q4W backfill |
 
 ### Webhook & Streaming
 
@@ -617,6 +661,19 @@ erDiagram
         numeric price_usd
         varchar source
     }
+
+    backstop_pool_snapshots {
+        serial id PK
+        varchar pool_address
+        date snapshot_date
+        timestamp snapshot_timestamp
+        bigint ledger_sequence
+        numeric shares
+        numeric tokens
+        numeric q4w
+        numeric q4w_pct
+        varchar src
+    }
 ```
 
 ### Table Details
@@ -644,6 +701,23 @@ Backstop pool (insurance) event history.
 PRIMARY KEY: id
 INDEX: idx_backstop_user (user_address, ledger_closed_at)
 ```
+
+#### backstop_pool_snapshots
+Daily backstop pool balance snapshots for Q4W tracking.
+
+```sql
+UNIQUE(pool_address, snapshot_date)
+INDEX: idx_backstop_pool_snapshots_lookup (pool_address, snapshot_date)
+INDEX: idx_backstop_pool_snapshots_date (snapshot_date DESC)
+```
+
+| Column | Description |
+|--------|-------------|
+| `shares` | Total backstop shares in the pool |
+| `tokens` | Total LP tokens deposited |
+| `q4w` | Shares queued for withdrawal |
+| `q4w_pct` | Percentage of shares queued: (q4w/shares)×100 |
+| `src` | Data source: 'bq' (BigQuery) or 'sdk' (live capture) |
 
 ---
 
@@ -696,7 +770,11 @@ npm start                # Run production server
 npm run setup            # Create tables and indexes
 
 # Backfills
-npm run backfill:lp-prices    # LP token prices
+npm run backfill:lp-prices       # LP token prices
+npm run backfill:backstop-q4w    # Backstop Q4W percentage history
+
+# Migrations
+npm run migrate:backstop-snapshots  # Create backstop_pool_snapshots table
 
 # Note: Pool events and backstop events are handled by Goldsky pipelines
 
@@ -708,7 +786,7 @@ npm run sync:pools-tokens     # Sync pool/token reference data
 
 | Workflow | Schedule | Purpose |
 |----------|----------|---------|
-| `daily-prices.yml` | Daily at 00:00 UTC | Capture token prices |
+| `daily-prices.yml` | Daily at 00:00 UTC | Capture token prices, emission APY, and backstop snapshots |
 
 ---
 
