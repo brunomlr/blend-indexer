@@ -4,6 +4,8 @@ dist/
 *.log
 .DS_Store
 .claude/
+docs/
+plan/
 
 # Credentials and service account keys
 *.json
