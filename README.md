@@ -1,6 +1,6 @@
-# Blend Protocol Backfill Backend
+# Blend Protocol Indexer
 
-Backend service for ingesting and serving [Blend Protocol](https://blend.capital/) lending data on the Stellar network. This service aggregates historical and real-time data from multiple sources to provide comprehensive position tracking, balance history, and transaction data for the Blend lending protocol.
+Indexer service for ingesting and serving [Blend Protocol](https://blend.capital/) lending data on the Stellar network. This service aggregates historical and real-time data from multiple sources to provide comprehensive position tracking, balance history, and transaction data for the Blend lending protocol.
 
 ## Table of Contents
 
@@ -22,7 +22,7 @@ Backend service for ingesting and serving [Blend Protocol](https://blend.capital
 
 ## Overview
 
-The Blend Protocol Backfill Backend is designed to:
+The Blend Protocol Indexer is designed to:
 
 1. **Ingest historical data** from Hubble (Stellar's public blockchain data on BigQuery)
 2. **Stream real-time events** from Goldsky webhooks

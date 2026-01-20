@@ -1,7 +1,7 @@
 {
-  "name": "blend-backfill-backend",
+  "name": "blend-protocol-indexer",
   "version": "1.0.0",
-  "description": "Backend for Blend Protocol data backfill system",
+  "description": "Indexer service for Blend Protocol lending data on Stellar",
   "main": "dist/api/server.js",
   "scripts": {
     "setup": "ts-node src/scripts/setup-db.ts",
