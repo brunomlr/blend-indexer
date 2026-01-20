@@ -6,6 +6,7 @@ import {
   Camera,
   FolderSync,
   Search,
+  Percent,
 } from "lucide-react"
 
 import {
@@ -23,6 +24,7 @@ export type ModuleKey =
   | 'tokens'
   | 'actions'
   | 'backstop'
+  | 'backstop-q4w'
   | 'lp-price'
   | 'pool-snapshots'
   | 'sync'
@@ -37,7 +39,8 @@ interface NavItem {
 const navItems: NavItem[] = [
   { key: 'tokens', label: 'Tokens', icon: Coins },
   { key: 'actions', label: 'Actions Backfill', icon: RefreshCw },
-  { key: 'backstop', label: 'Backstop', icon: Shield },
+  { key: 'backstop', label: 'Backstop Events', icon: Shield },
+  { key: 'backstop-q4w', label: 'Backstop Q4W', icon: Percent },
   { key: 'lp-price', label: 'LP Price', icon: DollarSign },
   { key: 'pool-snapshots', label: 'Pool Snapshots', icon: Camera },
   { key: 'sync', label: 'Sync Pools', icon: FolderSync },

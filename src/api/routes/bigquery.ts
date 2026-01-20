@@ -2233,4 +2233,193 @@ router.post('/lp-prices/upload', jsonUpload.single('file'), async (req: Request,
   }
 });
 
+// ============================================
+// BACKSTOP Q4W PERCENTAGE BACKFILL ROUTES
+// ============================================
+
+import { backstopQ4wBackfillService, BackstopQ4wBackfillParams } from '../../services/backstop-q4w-backfill';
+import { backstopPoolSnapshotRepository } from '../../repositories/backstop-pool-snapshot-repository';
+
+/**
+ * GET /api/bigquery/backstop-q4w/stats
+ * Get current statistics about backstop pool snapshots
+ */
+router.get('/backstop-q4w/stats', async (req: Request, res: Response) => {
+  try {
+    const stats = await backstopPoolSnapshotRepository.getStats();
+
+    res.json({
+      success: true,
+      ...stats,
+      backstop_contract: backstopQ4wBackfillService.getBackstopContract(),
+    });
+  } catch (error) {
+    console.error('Backstop Q4W stats API error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * GET /api/bigquery/backstop-q4w/query
+ * Get the BigQuery query for fetching backstop Q4W data
+ */
+router.get('/backstop-q4w/query', async (req: Request, res: Response) => {
+  try {
+    const startDate = (req.query.startDate as string) || '2025-04-14';
+    const endDate = req.query.endDate as string | undefined;
+    const poolAddress = req.query.poolAddress as string | undefined;
+
+    const query = backstopQ4wBackfillService.getBigQueryQuery({ startDate, endDate, poolAddress });
+
+    res.json({
+      success: true,
+      query,
+      backstop_contract: backstopQ4wBackfillService.getBackstopContract(),
+      instructions: [
+        '1. Copy the query above',
+        '2. Run it in BigQuery Console (https://console.cloud.google.com/bigquery)',
+        '3. Review the results for Q4W percentage data',
+      ],
+    });
+  } catch (error) {
+    console.error('Backstop Q4W query API error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * GET /api/bigquery/backstop-q4w/data
+ * Get existing backstop Q4W data from the database
+ */
+router.get('/backstop-q4w/data', async (req: Request, res: Response) => {
+  try {
+    const poolAddress = req.query.poolAddress as string | undefined;
+    const startDate = req.query.startDate as string | undefined;
+    const endDate = req.query.endDate as string | undefined;
+
+    if (poolAddress) {
+      // Get data for specific pool
+      const data = await backstopPoolSnapshotRepository.getQ4wHistory(poolAddress, startDate, endDate);
+      res.json({
+        success: true,
+        pool_address: poolAddress,
+        count: data.length,
+        data,
+      });
+    } else {
+      // Get latest Q4W for all pools
+      const data = await backstopPoolSnapshotRepository.getLatestQ4wByPool();
+      res.json({
+        success: true,
+        count: data.length,
+        data,
+      });
+    }
+  } catch (error) {
+    console.error('Backstop Q4W data API error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * POST /api/bigquery/backstop-q4w/estimate
+ * Get cost estimate for backstop Q4W backfill
+ */
+router.post('/backstop-q4w/estimate', async (req: Request, res: Response) => {
+  try {
+    const { startDate, endDate, poolAddress } = req.body;
+
+    const estimate = await backstopQ4wBackfillService.getCostEstimate({
+      startDate,
+      endDate,
+      poolAddress,
+    });
+
+    res.json({
+      success: true,
+      ...estimate,
+    });
+  } catch (error) {
+    console.error('Backstop Q4W estimate API error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * POST /api/bigquery/backstop-q4w/simulate
+ * Preview backstop Q4W data from BigQuery without saving
+ */
+router.post('/backstop-q4w/simulate', async (req: Request, res: Response) => {
+  try {
+    const { startDate, endDate, poolAddress, limit } = req.body;
+
+    const result = await backstopQ4wBackfillService.simulate({
+      startDate,
+      endDate,
+      poolAddress,
+      limit,
+    });
+
+    res.json({
+      success: result.success,
+      rows_count: result.rows.length,
+      rows: result.rows,
+      estimated_cost: result.estimated_cost,
+      query: result.query,
+      error: result.error,
+    });
+  } catch (error) {
+    console.error('Backstop Q4W simulate API error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+/**
+ * POST /api/bigquery/backstop-q4w/backfill
+ * Run backstop Q4W backfill directly from BigQuery
+ */
+router.post('/backstop-q4w/backfill', async (req: Request, res: Response) => {
+  try {
+    const { startDate, endDate, poolAddress, limit } = req.body;
+
+    const result = await backstopQ4wBackfillService.runBackfill({
+      startDate,
+      endDate,
+      poolAddress,
+      limit,
+      skipConfirmation: true, // Skip confirmation for API calls
+    });
+
+    res.json({
+      success: result.success,
+      rows_fetched: result.rows_fetched,
+      rows_inserted: result.rows_inserted,
+      rows_updated: result.rows_updated,
+      estimated_cost: result.estimated_cost,
+      error: result.error,
+    });
+  } catch (error) {
+    console.error('Backstop Q4W backfill API error:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
 export default router;

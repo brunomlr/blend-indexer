@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ActionsBackfill } from '@/components/ActionsBackfill'
 import { BackstopBackfill } from '@/components/BackstopBackfill'
+import { BackstopQ4wBackfill } from '@/components/BackstopQ4wBackfill'
 import { SyncPoolsTokens } from '@/components/SyncPoolsTokens'
 import { LpPriceBackfill } from '@/components/LpPriceBackfill'
 import { PoolSnapshotsBackfill } from '@/components/PoolSnapshotsBackfill'
@@ -24,6 +25,8 @@ function App() {
         return <ActionsBackfill />
       case 'backstop':
         return <BackstopBackfill />
+      case 'backstop-q4w':
+        return <BackstopQ4wBackfill />
       case 'lp-price':
         return <LpPriceBackfill />
       case 'pool-snapshots':

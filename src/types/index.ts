@@ -12,6 +12,19 @@ export interface PoolSnapshotRow {
   last_time?: number; // Optional: Unix timestamp from blockchain
 }
 
+// Backstop Pool Snapshot Types (for Q4W percentage tracking)
+export interface BackstopPoolSnapshotRow {
+  pool_address: string;
+  snapshot_date: string;
+  snapshot_timestamp: string;
+  ledger_sequence: number;
+  shares: string;       // Total backstop shares (stored as string for bigint)
+  tokens: string;       // Total LP tokens deposited
+  q4w: string;          // Shares queued for withdrawal
+  q4w_pct: number;      // (q4w / shares) * 100
+  src?: string;         // 'bq' = BigQuery, 'gs' = Goldsky
+}
+
 // User Position Types
 export interface UserPositionRow {
   pool_id: string;
