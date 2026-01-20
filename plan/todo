@@ -1,3 +1,0 @@
-the new backfill for both gs and bq is probably nt ingesting all events snymore after changing to the new id model
-b rates in pool snapshot vs in use event for historical dates, which one to use adn how it uses the events one today (view in db?)
-which tables are not used by the frontend
