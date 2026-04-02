@@ -7,6 +7,7 @@ import { LpPriceBackfill } from '@/components/LpPriceBackfill'
 import { PoolSnapshotsBackfill } from '@/components/PoolSnapshotsBackfill'
 import { TokensList } from '@/components/TokensList'
 import { ExploreModule } from '@/components/ExploreModule'
+import { LiveTransactions } from '@/components/LiveTransactions'
 import { AppSidebar, type ModuleKey } from '@/components/AppSidebar'
 import {
   SidebarProvider,
@@ -35,6 +36,8 @@ function App() {
         return <SyncPoolsTokens />
       case 'explore':
         return <ExploreModule />
+      case 'live':
+        return <LiveTransactions />
       default:
         return <TokensList />
     }

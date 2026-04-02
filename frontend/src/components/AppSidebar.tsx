@@ -7,6 +7,7 @@ import {
   FolderSync,
   Search,
   Percent,
+  Radio,
 } from "lucide-react"
 
 import {
@@ -29,6 +30,7 @@ export type ModuleKey =
   | 'pool-snapshots'
   | 'sync'
   | 'explore'
+  | 'live'
 
 interface NavItem {
   key: ModuleKey
@@ -45,6 +47,7 @@ const navItems: NavItem[] = [
   { key: 'pool-snapshots', label: 'Pool Snapshots', icon: Camera },
   { key: 'sync', label: 'Sync Pools', icon: FolderSync },
   { key: 'explore', label: 'Explore', icon: Search },
+  { key: 'live', label: 'Live', icon: Radio },
 ]
 
 interface AppSidebarProps {

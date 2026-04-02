@@ -1,5 +1,10 @@
 import { pool } from '../config/database';
 
+export interface AuctionAssetEntry {
+  asset: string;
+  amount: string;
+}
+
 export interface BlendActionRow {
   id: string;
   pool_id: string;
@@ -16,11 +21,14 @@ export interface BlendActionRow {
   auction_type: string | null;        // 0=liquidation, 1=bad_debt, 2=interest
   filler_address: string | null;      // Who filled the auction (fill_auction only)
   liquidation_percent: string | null; // % of position (new_auction) or fill % (fill_auction)
-  // Auction bid/lot data
+  // Auction bid/lot data (scalar - first asset only, kept for backward compat)
   bid_asset: string | null;           // First asset in bid (what filler pays)
   bid_amount: string | null;          // Amount of bid asset
   lot_asset: string | null;           // First asset in lot (what filler receives)
   lot_amount: string | null;          // Amount of lot asset
+  // Auction bid/lot data (JSONB - all assets)
+  bid_assets: AuctionAssetEntry[] | null;  // All bid assets [{asset, amount}, ...]
+  lot_assets: AuctionAssetEntry[] | null;  // All lot assets [{asset, amount}, ...]
   // Data source
   src: 'bq' | 'gs' | 'csv';           // 'bq' = BigQuery backfill, 'gs' = Goldsky, 'csv' = CSV upload
 }
@@ -57,8 +65,8 @@ export class ActionsRepository {
     }
 
     // PostgreSQL has a 65535 parameter limit
-    // With 19 parameters per row, we can safely do ~3400 rows per batch
-    const CHUNK_SIZE = 3400;
+    // With 21 parameters per row, we can safely do ~3100 rows per batch
+    const CHUNK_SIZE = 3100;
 
     // If we have more rows than the chunk size, process in chunks
     if (uniqueRows.length > CHUNK_SIZE) {
@@ -113,9 +121,9 @@ export class ActionsRepository {
       const placeholders: string[] = [];
 
       rows.forEach((row, index) => {
-        const offset = index * 19;
+        const offset = index * 21;
         placeholders.push(
-          `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16}, $${offset + 17}, $${offset + 18}, $${offset + 19})`
+          `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16}, $${offset + 17}, $${offset + 18}, $${offset + 19}, $${offset + 20}, $${offset + 21})`
         );
 
         values.push(
@@ -137,6 +145,8 @@ export class ActionsRepository {
           row.bid_amount,
           row.lot_asset,
           row.lot_amount,
+          row.bid_assets ? JSON.stringify(row.bid_assets) : null,
+          row.lot_assets ? JSON.stringify(row.lot_assets) : null,
           row.src
         );
       });
@@ -147,7 +157,8 @@ export class ActionsRepository {
           action_type, asset_address, user_address,
           amount_underlying, amount_tokens, implied_rate,
           auction_type, filler_address, liquidation_percent,
-          bid_asset, bid_amount, lot_asset, lot_amount, src
+          bid_asset, bid_amount, lot_asset, lot_amount,
+          bid_assets, lot_assets, src
         )
         VALUES ${placeholders.join(', ')}
         ON CONFLICT (id)
@@ -169,6 +180,8 @@ export class ActionsRepository {
           bid_amount = EXCLUDED.bid_amount,
           lot_asset = EXCLUDED.lot_asset,
           lot_amount = EXCLUDED.lot_amount,
+          bid_assets = EXCLUDED.bid_assets,
+          lot_assets = EXCLUDED.lot_assets,
           src = EXCLUDED.src
         RETURNING (xmax = 0) AS inserted;
       `;

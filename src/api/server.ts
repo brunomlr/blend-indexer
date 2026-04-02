@@ -11,6 +11,7 @@ import tokenStatisticsRoutes from './routes/token-statistics';
 import exploreRoutes from './routes/explore';
 import metadataRoutes from './routes/metadata';
 import emissionApyRoutes from './routes/emission-apy';
+import liveRoutes from './routes/live';
 
 const app = express();
 
@@ -46,6 +47,7 @@ app.use('/api/token-statistics', tokenStatisticsRoutes);
 app.use('/api/explore', exploreRoutes);
 app.use('/api/metadata', metadataRoutes);
 app.use('/api/emission-apy', emissionApyRoutes);
+app.use('/api/live', liveRoutes);
 
 // Serve static files from frontend/dist directory
 app.use(express.static(path.join(__dirname, '../../frontend/dist')));
