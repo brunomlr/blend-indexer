@@ -28,8 +28,9 @@ pool.on('connect', () => {
 });
 
 pool.on('error', (err) => {
-  console.error('Unexpected database error:', err);
-  process.exit(-1);
+  // Neon routinely terminates idle connections; the pool replaces the dead
+  // client on its own. Exiting here would crash-loop the API server.
+  console.error('Idle database client error (pool will recover):', err.message);
 });
 
 // Helper function to test connection

@@ -19,14 +19,15 @@ router.post('/backfill/lending', async (req: Request, res: Response) => {
   const startTime = Date.now();
 
   try {
-    const scriptPath = path.resolve(__dirname, '../../../scripts/backfill-emission-apy.ts');
+    const projectRoot = path.resolve(__dirname, '../../..');
+    const scriptPath = path.join(projectRoot, 'src/scripts/backfill-emission-apy.ts');
 
     const result = await new Promise<BackfillResult>((resolve) => {
       const outputLines: string[] = [];
       const errorLines: string[] = [];
 
       const child = spawn('npx', ['ts-node', scriptPath, '--lending', '--yes'], {
-        cwd: path.resolve(__dirname, '../../../..'),
+        cwd: projectRoot,
         env: { ...process.env },
       });
 
@@ -89,14 +90,15 @@ router.post('/backfill/backstop', async (req: Request, res: Response) => {
   const startTime = Date.now();
 
   try {
-    const scriptPath = path.resolve(__dirname, '../../../scripts/backfill-emission-apy.ts');
+    const projectRoot = path.resolve(__dirname, '../../..');
+    const scriptPath = path.join(projectRoot, 'src/scripts/backfill-emission-apy.ts');
 
     const result = await new Promise<BackfillResult>((resolve) => {
       const outputLines: string[] = [];
       const errorLines: string[] = [];
 
       const child = spawn('npx', ['ts-node', scriptPath, '--backstop', '--yes'], {
-        cwd: path.resolve(__dirname, '../../../..'),
+        cwd: projectRoot,
         env: { ...process.env },
       });
 

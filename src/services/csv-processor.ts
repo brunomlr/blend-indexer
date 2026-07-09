@@ -143,6 +143,9 @@ export async function processActionsCsv(csvContent: string): Promise<CsvProcessR
           bid_amount: normalizedRow.bid_amount || null,
           lot_asset: normalizedRow.lot_asset || null,
           lot_amount: normalizedRow.lot_amount || null,
+          // Multi-asset bid/lot data is not present in CSV exports
+          bid_assets: null,
+          lot_assets: null,
           src: 'csv',
         };
 

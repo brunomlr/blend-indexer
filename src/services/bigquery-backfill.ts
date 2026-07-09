@@ -609,7 +609,7 @@ export class BigQueryBackfillService {
           cost: optimizedEstimate.total.cost,
         };
 
-        console.log(`✓ Estimated cost: $${estimate.cost} (${estimate.gb} GB) - OPTIMIZED 35% cheaper!`);
+        console.log(`✓ Estimated cost: $${estimate.cost} (${estimate.gb} GB)`);
         console.log('  (First 1TB per month is free)\n');
       } catch (error) {
         console.log('⚠️  Could not estimate cost, continuing anyway...\n');

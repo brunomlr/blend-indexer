@@ -32,6 +32,10 @@ export function SyncPoolsTokens() {
   async function loadStats() {
     try {
       const response = await fetch('/api/bigquery/sync/stats')
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       if (data.success) {
         setStats(data)
@@ -49,6 +53,10 @@ export function SyncPoolsTokens() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setResult(data)
       if (data.success) {

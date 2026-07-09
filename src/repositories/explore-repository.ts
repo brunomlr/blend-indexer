@@ -107,13 +107,34 @@ export interface Token {
   is_native: boolean;
 }
 
-// Mock prices for USD conversion
-const MOCK_PRICES: Record<string, number> = {
-  USDC: 1,
-  XLM: 0.12,
-  AQUA: 0.004,
-  BLND: 0.25,
-};
+// Latest USD price per token symbol, from daily_token_prices (populated by
+// the daily price-capture cron). Cached briefly since explore requests make
+// several price lookups.
+const PRICE_CACHE_TTL_MS = 10 * 60 * 1000;
+let priceCache: { prices: Record<string, number>; fetchedAt: number } | null = null;
+
+async function getLatestPrices(): Promise<Record<string, number>> {
+  if (priceCache && Date.now() - priceCache.fetchedAt < PRICE_CACHE_TTL_MS) {
+    return priceCache.prices;
+  }
+
+  const result = await pool.query(`
+    SELECT DISTINCT ON (dtp.token_address)
+      UPPER(t.symbol) AS symbol,
+      dtp.usd_price
+    FROM daily_token_prices dtp
+    JOIN tokens t ON t.asset_address = dtp.token_address
+    ORDER BY dtp.token_address, dtp.price_date DESC
+  `);
+
+  const prices: Record<string, number> = {};
+  for (const row of result.rows) {
+    prices[row.symbol] = parseFloat(row.usd_price) || 0;
+  }
+
+  priceCache = { prices, fetchedAt: Date.now() };
+  return prices;
+}
 
 export class ExploreRepository {
   /**
@@ -134,7 +155,8 @@ export class ExploreRepository {
       [assetAddress]
     );
     const symbol = tokenResult.rows[0]?.symbol || '';
-    const price = MOCK_PRICES[symbol.toUpperCase()] || 0;
+    const prices = await getLatestPrices();
+    const price = prices[symbol.toUpperCase()] || 0;
 
     const minAmountNative = inUsd && price > 0 ? minAmount / price : minAmount;
     const orderDirection = orderDir === 'asc' ? 'ASC' : 'DESC';
@@ -310,12 +332,13 @@ export class ExploreRepository {
       : '';
 
     // Build query for each token and use INTERSECT for AND logic
+    const prices = await getLatestPrices();
     const tokenQueries: string[] = [];
     const allParams: (string | number)[] = [];
     let paramIndex = 1;
 
     for (const filter of tokenFilters) {
-      const price = MOCK_PRICES[filter.symbol.toUpperCase()] || 0;
+      const price = prices[filter.symbol.toUpperCase()] || 0;
       const minBalance = filter.minAmount || 0;
       const minBalanceNative = inUsd && price > 0 ? minBalance / price : minBalance;
 
@@ -363,7 +386,7 @@ export class ExploreRepository {
 
     // Use the first token for display (or aggregate later)
     const primaryFilter = tokenFilters[0];
-    const primaryPrice = MOCK_PRICES[primaryFilter.symbol.toUpperCase()] || 0;
+    const primaryPrice = prices[primaryFilter.symbol.toUpperCase()] || 0;
 
     // Build final query that gets user details
     const finalQuery = `
@@ -486,10 +509,11 @@ export class ExploreRepository {
       queryParams
     );
 
+    const prices = await getLatestPrices();
     return result.rows.map((row) => {
       const totalDeposited = parseFloat(row.total_deposited) || 0;
       const symbol = row.asset_symbol || '';
-      const price = MOCK_PRICES[symbol.toUpperCase()] || 0;
+      const price = prices[symbol.toUpperCase()] || 0;
 
       return {
         userAddress: row.user_address,
@@ -566,11 +590,12 @@ export class ExploreRepository {
     let activeAccounts = 0;
     let totalEvents = 0;
 
+    const prices = await getLatestPrices();
     for (const row of result.rows) {
       const deposits = parseFloat(row.total_deposits) || 0;
       const withdrawals = parseFloat(row.total_withdrawals) || 0;
       const symbol = row.asset_symbol || '';
-      const price = MOCK_PRICES[symbol.toUpperCase()] || 0;
+      const price = prices[symbol.toUpperCase()] || 0;
 
       totalDeposits += deposits;
       totalDepositsUsd += deposits * price;
@@ -651,11 +676,12 @@ export class ExploreRepository {
       queryParams
     );
 
+    const prices = await getLatestPrices();
     return result.rows.map((row) => {
       const depositVolume = parseFloat(row.deposit_volume) || 0;
       const withdrawVolume = parseFloat(row.withdraw_volume) || 0;
       const symbol = row.asset_symbol || '';
-      const price = MOCK_PRICES[symbol.toUpperCase()] || 0;
+      const price = prices[symbol.toUpperCase()] || 0;
 
       return {
         assetAddress: row.asset_address,

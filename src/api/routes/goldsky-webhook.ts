@@ -10,10 +10,10 @@ const GOLDSKY_WEBHOOK_SECRET = process.env.GOLDSKY_WEBHOOK_SECRET;
 
 /**
  * Verify webhook signature from Goldsky
- * Goldsky signs webhooks with HMAC-SHA256
+ * Goldsky signs webhooks with HMAC-SHA256 over the raw request body
  */
 function verifyWebhookSignature(
-  payload: string,
+  payload: Buffer,
   signature: string | undefined,
   secret: string
 ): boolean {
@@ -27,11 +27,11 @@ function verifyWebhookSignature(
     .update(payload)
     .digest('hex')}`;
 
-  // Use timing-safe comparison to prevent timing attacks
-  return crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expectedSignature)
-  );
+  // Timing-safe comparison; hash both sides so the buffers are always the
+  // same length (timingSafeEqual throws on length mismatch)
+  const providedDigest = crypto.createHash('sha256').update(signature).digest();
+  const expectedDigest = crypto.createHash('sha256').update(expectedSignature).digest();
+  return crypto.timingSafeEqual(providedDigest, expectedDigest);
 }
 
 /**
@@ -44,10 +44,10 @@ router.post('/webhook', async (req: Request, res: Response) => {
   try {
     // Verify webhook signature if secret is configured
     if (GOLDSKY_WEBHOOK_SECRET) {
-      const rawBody = JSON.stringify(req.body);
+      const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
       const signature = req.headers['x-goldsky-signature'] as string | undefined;
 
-      if (!verifyWebhookSignature(rawBody, signature, GOLDSKY_WEBHOOK_SECRET)) {
+      if (!rawBody || !verifyWebhookSignature(rawBody, signature, GOLDSKY_WEBHOOK_SECRET)) {
         console.error('❌ Invalid webhook signature');
         return res.status(401).json({
           error: 'Unauthorized',

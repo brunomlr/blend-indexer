@@ -1,6 +1,9 @@
 import { BigQuery } from '@google-cloud/bigquery';
 import dotenv from 'dotenv';
 import path from 'path';
+import { PoolMetadata } from '@blend-capital/blend-sdk';
+import { getBlendNetwork } from '../lib/blend/network';
+import { positionEntryExpr, positionIndexColumns, POSITIONS_OUTER_INDEX, RESCONFIG_MIN_CLOSED_AT } from '../utils/bigquery-sql';
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
@@ -33,6 +36,12 @@ export interface OptimizedQueryParams {
 export class BigQueryClientOptimized {
   private client: BigQuery;
 
+  // ResConfig mappings change rarely (only when a pool adds/updates a
+  // reserve) but the query is expensive (contract_id is only the SECOND
+  // clustering key, so it scans most of the table's history). Cache per pool.
+  private static readonly MAPPING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+  private mappingCache = new Map<string, { mapping: Map<number, string>; fetchedAt: number }>();
+
   constructor() {
     const options: any = {};
     if (GOOGLE_CLOUD_PROJECT) {
@@ -58,16 +67,41 @@ export class BigQueryClientOptimized {
    * @returns Map of reserve_index -> asset_address
    */
   async getIndexToAssetMapping(poolId: string): Promise<Map<number, string>> {
+    const cached = this.mappingCache.get(poolId);
+    if (cached && Date.now() - cached.fetchedAt < BigQueryClientOptimized.MAPPING_CACHE_TTL_MS) {
+      console.log(`📍 Step 1: Using cached index-to-asset mapping (${cached.mapping.size} assets)`);
+      return cached.mapping;
+    }
+
+    // Primary source: Stellar RPC (free). The pool's on-chain reserve list
+    // position IS the reserve index. The BigQuery ResConfig query below is
+    // only a fallback - it bills ~120+ GB per execution because contract_id
+    // is the table's SECOND clustering key and barely prunes.
+    try {
+      const metadata = await PoolMetadata.load(getBlendNetwork(), poolId);
+      const mapping = new Map<number, string>();
+      metadata.reserveList.forEach((assetId, idx) => mapping.set(idx, assetId));
+      if (mapping.size > 0) {
+        console.log(`📍 Step 1: Loaded index-to-asset mapping from RPC (${mapping.size} assets, free)`);
+        this.mappingCache.set(poolId, { mapping, fetchedAt: Date.now() });
+        return mapping;
+      }
+      console.warn('⚠️  RPC returned an empty reserve list - falling back to BigQuery ResConfig');
+    } catch (error) {
+      console.warn(`⚠️  RPC mapping load failed (${error instanceof Error ? error.message : error}) - falling back to BigQuery ResConfig`);
+    }
+
     console.log('📍 Step 1: Fetching index-to-asset mapping from ResConfig...');
 
     const query = `
-SELECT
+SELECT DISTINCT
   SAFE_CAST(JSON_VALUE(val_decoded, '$.map[3].val.u32') AS INT64) AS reserve_index,
   JSON_VALUE(key_decoded, '$.vec[1].address') AS asset_address
 FROM \`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${BIGQUERY_TABLE}\`
 WHERE contract_id = '${this.escapeSqlString(poolId)}'
   AND JSON_VALUE(key_decoded, '$.vec[0].symbol') = 'ResConfig'
   AND deleted = false
+  AND closed_at >= TIMESTAMP('${RESCONFIG_MIN_CLOSED_AT}')
 ORDER BY reserve_index
     `.trim();
 
@@ -79,8 +113,9 @@ ORDER BY reserve_index
     });
 
     const bytes = parseInt(dryJob.metadata?.statistics?.totalBytesProcessed || '0');
-    const kb = (bytes / 1024).toFixed(2);
-    console.log(`  Cost estimate: ${kb} KB (negligible cost)`);
+    const gb = (bytes / (1024 ** 3)).toFixed(2);
+    const cost = (bytes / (1024 ** 4) * 5).toFixed(4);
+    console.log(`  Cost estimate: ${gb} GB ($${cost}, upper bound before cluster pruning)`);
 
     // Execute query
     const [rows] = await this.client.query({
@@ -97,6 +132,11 @@ ORDER BY reserve_index
     }
 
     console.log(`  ✓ Found ${mapping.size} assets (indices: ${Array.from(mapping.keys()).join(', ')})`);
+
+    // Only cache non-empty results so a transient miss isn't pinned for a day
+    if (mapping.size > 0) {
+      this.mappingCache.set(poolId, { mapping, fetchedAt: Date.now() });
+    }
 
     return mapping;
   }
@@ -161,13 +201,10 @@ ORDER BY reserve_index
 
     const whereClause = filters.join('\n  AND ');
 
-    // Build column extractions for each known index
+    // Build column extractions for each known index (matched by map key, not
+    // array position - Positions inner maps are sparse)
     const indices = Array.from(indexMapping.keys());
-    const indexColumns = indices.map(idx => `
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[2].val.map[${idx}].val.i128') AS FLOAT64) AS supply_${idx}_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[0].val.map[${idx}].val.i128') AS FLOAT64) AS collateral_${idx}_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[1].val.map[${idx}].val.i128') AS FLOAT64) AS liabilities_${idx}_raw`
-    ).join(',');
+    const indexColumns = positionIndexColumns(indices);
 
     // SIMPLIFIED QUERY - NO CTEs!
     // This allows BigQuery to:
@@ -334,6 +371,10 @@ ORDER BY ledger_sequence DESC
       daysBack = 90,
     } = params;
 
+    if (!Number.isInteger(assetIndex) || assetIndex < 0) {
+      throw new Error(`Invalid assetIndex: ${assetIndex}`);
+    }
+
     console.log('🚀 Ultra-simple user query (optimized for UI)...');
     console.log(`  User: ${userAddress.substring(0, 8)}...`);
     console.log(`  Asset: ${assetAddress.substring(0, 8)}... (Index ${assetIndex})`);
@@ -361,9 +402,9 @@ WITH position_changes AS (
     ledger_key_hash_base_64 AS entry_hash,
     ledger_entry_change,
     JSON_VALUE(key_decoded, '$.vec[1].address') AS user_address,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[2].val.map[${assetIndex}].val.i128') AS FLOAT64) AS supply_btokens_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[0].val.map[${assetIndex}].val.i128') AS FLOAT64) AS collateral_btokens_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[1].val.map[${assetIndex}].val.i128') AS FLOAT64) AS liabilities_dtokens_raw
+    ${positionEntryExpr(POSITIONS_OUTER_INDEX.supply, assetIndex)} AS supply_btokens_raw,
+    ${positionEntryExpr(POSITIONS_OUTER_INDEX.collateral, assetIndex)} AS collateral_btokens_raw,
+    ${positionEntryExpr(POSITIONS_OUTER_INDEX.liabilities, assetIndex)} AS liabilities_dtokens_raw
   FROM \`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${BIGQUERY_TABLE}\`
   WHERE contract_id = '${this.escapeSqlString(poolId)}'
     AND JSON_VALUE(key_decoded, '$.vec[0].symbol') = 'Positions'
@@ -434,6 +475,7 @@ FROM \`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${BIGQUERY_TABLE}\`
 WHERE contract_id = '${this.escapeSqlString(poolId)}'
   AND JSON_VALUE(key_decoded, '$.vec[0].symbol') = 'ResConfig'
   AND deleted = false
+  AND closed_at >= TIMESTAMP('${RESCONFIG_MIN_CLOSED_AT}')
     `.trim();
 
     const [job1] = await this.client.createQueryJob({
@@ -486,11 +528,7 @@ WHERE contract_id = '${this.escapeSqlString(poolId)}'
       filters.push(`ledger_sequence <= ${endLedger}`);
     }
 
-    const indexColumns = indices.map(idx => `
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[2].val.map[${idx}].val.i128') AS FLOAT64) AS supply_${idx}_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[0].val.map[${idx}].val.i128') AS FLOAT64) AS collateral_${idx}_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[1].val.map[${idx}].val.i128') AS FLOAT64) AS liabilities_${idx}_raw`
-    ).join(',');
+    const indexColumns = positionIndexColumns(indices);
 
     const step2Query = `
 SELECT
@@ -536,9 +574,14 @@ ORDER BY ledger_sequence DESC
   }
 
   /**
-   * Fetch ALL pools with optimized two-step approach
-   * Step 1: Get index mappings for ALL pools at once
-   * Step 2: Query positions for ALL pools at once with simple WHERE clauses
+   * Fetch ALL pools by running the corrected two-step per-pool workflow
+   * (ResConfig mapping -> wide-format Positions query -> pivot) for each pool
+   * and concatenating the per-asset rows.
+   *
+   * contract_data is clustered by contract_id, so per-pool queries scan only
+   * that pool's slice. The rows include asset_address (from the ResConfig
+   * mapping), which the previous single-query implementation could not
+   * provide.
    */
   async fetchAllPoolsOptimized(params: {
     poolIds: string[];
@@ -549,97 +592,17 @@ ORDER BY ledger_sequence DESC
     endLedger?: number;
     targetUser?: string;
   }): Promise<any[]> {
-    const { poolIds } = params;
+    const { poolIds, ...rangeParams } = params;
 
-    // Step 1: Get index mappings for ALL pools at once
-    const poolIndices = new Map<string, Map<number, string>>();
-
+    const allPositions: any[] = [];
     for (const poolId of poolIds) {
-      const mapping = await this.getIndexToAssetMapping(poolId);
-      poolIndices.set(poolId, mapping);
+      console.log(`\n📦 Pool ${poolId.substring(0, 8)}... (${poolIds.indexOf(poolId) + 1}/${poolIds.length})`);
+      const positions = await this.fetchAllAssetsOptimized({ poolId, ...rangeParams });
+      allPositions.push(...positions);
     }
 
-    // Step 2: Build optimized query for ALL pools
-    const {
-      daysBack = 90,
-      targetUser,
-      startDate,
-      endDate,
-      startLedger,
-      endLedger,
-    } = params;
-
-    const filters: string[] = [];
-
-    // Pool filter - all pools at once
-    const poolList = poolIds.map(id => `'${this.escapeSqlString(id)}'`).join(', ');
-    filters.push(`contract_id IN (${poolList})`);
-
-    filters.push(`JSON_VALUE(key_decoded, '$.vec[0].symbol') = 'Positions'`);
-    filters.push(`deleted = false`);
-
-    if (targetUser) {
-      filters.push(`JSON_VALUE(key_decoded, '$.vec[1].address') = '${this.escapeSqlString(targetUser)}'`);
-    }
-
-    // Date filters
-    if (startDate && endDate) {
-      filters.push(`closed_at >= TIMESTAMP('${startDate}')`);
-      filters.push(`closed_at < TIMESTAMP_ADD(TIMESTAMP('${endDate}'), INTERVAL 1 DAY)`);
-    } else if (startDate) {
-      filters.push(`closed_at >= TIMESTAMP('${startDate}')`);
-    } else if (endDate) {
-      filters.push(`closed_at < TIMESTAMP_ADD(TIMESTAMP('${endDate}'), INTERVAL 1 DAY)`);
-    } else if (daysBack) {
-      filters.push(`closed_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${daysBack} DAY)`);
-    }
-
-    // Ledger filters
-    if (startLedger !== undefined) {
-      filters.push(`ledger_sequence >= ${startLedger}`);
-    }
-    if (endLedger !== undefined) {
-      filters.push(`ledger_sequence <= ${endLedger}`);
-    }
-
-    const whereClause = filters.join('\n  AND ');
-
-    const query = `
-SELECT
-  contract_id AS pool_id,
-  JSON_VALUE(key_decoded, '$.vec[1].address') AS user_address,
-  SAFE_CAST(JSON_VALUE(val_decoded, '$.map[0].val.u128') AS BIGNUMERIC) AS supply_btokens,
-  SAFE_CAST(JSON_VALUE(val_decoded, '$.map[1].val.u128') AS BIGNUMERIC) AS liabilities_dtokens,
-  SAFE_CAST(JSON_VALUE(val_decoded, '$.map[2].val.u128') AS BIGNUMERIC) AS collateral_btokens,
-  closed_at,
-  ledger_sequence,
-  entry_hash,
-  ledger_entry_change
-FROM \`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${BIGQUERY_TABLE}\`
-WHERE ${whereClause}
-ORDER BY pool_id, user_address, ledger_sequence
-    `.trim();
-
-    console.log('  Running optimized multi-pool query...');
-    const [job] = await this.client.createQueryJob({
-      query,
-      useLegacySql: false,
-    });
-
-    const [rows] = await job.getQueryResults();
-    console.log(`  ✓ Fetched ${rows.length} rows for ${poolIds.length} pools`);
-
-    return rows.map((row: any) => ({
-      pool_id: row.pool_id,
-      user_address: row.user_address,
-      supply_btokens: row.supply_btokens ? parseFloat(row.supply_btokens.toString()) : 0,
-      liabilities_dtokens: row.liabilities_dtokens ? parseFloat(row.liabilities_dtokens.toString()) : 0,
-      collateral_btokens: row.collateral_btokens ? parseFloat(row.collateral_btokens.toString()) : 0,
-      snapshot_timestamp: row.closed_at?.value || null,
-      ledger_sequence: row.ledger_sequence ? parseInt(row.ledger_sequence.toString()) : 0,
-      entry_hash: row.entry_hash || '',
-      ledger_entry_change: row.ledger_entry_change || 0,
-    }));
+    console.log(`  ✓ Fetched ${allPositions.length} position rows for ${poolIds.length} pools`);
+    return allPositions;
   }
 
   /**
@@ -671,6 +634,7 @@ FROM \`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${BIGQUERY_TABLE}\`
 WHERE contract_id = '${this.escapeSqlString(poolId)}'
   AND JSON_VALUE(key_decoded, '$.vec[0].symbol') = 'ResConfig'
   AND deleted = false
+  AND closed_at >= TIMESTAMP('${RESCONFIG_MIN_CLOSED_AT}')
       `.trim();
 
       const [job1] = await this.client.createQueryJob({
@@ -724,8 +688,18 @@ WHERE contract_id = '${this.escapeSqlString(poolId)}'
 
     const whereClause = filters.join('\n  AND ');
 
+    // Reference the same columns as the real positions query so the dry-run
+    // reflects actual bytes billed (COUNT(*) would omit val_decoded, by far
+    // the widest column, and badly underestimate)
     const step2Query = `
-SELECT COUNT(*) as count
+SELECT
+  contract_id,
+  key_decoded,
+  val_decoded,
+  closed_at,
+  ledger_sequence,
+  ledger_key_hash_base_64,
+  ledger_entry_change
 FROM \`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${BIGQUERY_TABLE}\`
 WHERE ${whereClause}
     `.trim();

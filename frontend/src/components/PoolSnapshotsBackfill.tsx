@@ -68,9 +68,10 @@ export function PoolSnapshotsBackfill() {
   const [estimateResult, setEstimateResult] = useState<EstimateResult | null>(null)
   const [backfillResult, setBackfillResult] = useState<BackfillResult | null>(null)
   const [copiedQuery, setCopiedQuery] = useState(false)
+  const [validationError, setValidationError] = useState<string | null>(null)
 
   // Emission APY backfill states
-  const [runningEmissionApy, setRunningEmissionApy] = useState(false)
+  const [runningEmissionApy, setRunningEmissionApy] = useState<'lending' | 'backstop' | null>(null)
   const [emissionApyResult, setEmissionApyResult] = useState<EmissionApyResult | null>(null)
 
   useEffect(() => {
@@ -81,6 +82,10 @@ export function PoolSnapshotsBackfill() {
     setLoading(true)
     try {
       const response = await fetch('/api/bigquery/pool-snapshots/stats')
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       if (data.success) {
         setStats(data)
@@ -92,12 +97,31 @@ export function PoolSnapshotsBackfill() {
     }
   }
 
+  function clearEstimates() {
+    setEstimateResult(null)
+    setValidationError(null)
+  }
+
+  function validateRange(): string | null {
+    if (rangeType === 'days') {
+      const days = Number(daysBack)
+      if (!Number.isInteger(days) || days < 1) {
+        return 'Days back must be a whole number of at least 1.'
+      }
+    } else if (rangeType === 'dateRange') {
+      if (!startDate || !endDate) {
+        return 'Both start date and end date are required.'
+      }
+    }
+    return null
+  }
+
   function buildPayload() {
     const payload: Record<string, unknown> = {}
 
     if (rangeType === 'days') {
-      const days = parseInt(daysBack)
-      if (days && days > 0) {
+      const days = Number(daysBack)
+      if (Number.isInteger(days) && days > 0) {
         const end = new Date()
         const start = new Date()
         start.setDate(start.getDate() - days)
@@ -113,6 +137,12 @@ export function PoolSnapshotsBackfill() {
   }
 
   async function getEstimate() {
+    const rangeError = validateRange()
+    if (rangeError) {
+      setValidationError(rangeError)
+      return
+    }
+    setValidationError(null)
     setEstimating(true)
     setEstimateResult(null)
     try {
@@ -121,6 +151,10 @@ export function PoolSnapshotsBackfill() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPayload()),
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setEstimateResult(data)
     } catch (error) {
@@ -131,11 +165,22 @@ export function PoolSnapshotsBackfill() {
   }
 
   async function runBackfill() {
-    // Check if estimated cost is > $1 and ask for confirmation
-    const estimatedCost = estimateResult?.cost ? parseFloat(estimateResult.cost) : 0
-    if (estimatedCost > 1) {
+    const rangeError = validateRange()
+    if (rangeError) {
+      setValidationError(rangeError)
+      return
+    }
+    setValidationError(null)
+
+    // Ask for confirmation when there is no current estimate, or when the estimated cost is > $1
+    if (!estimateResult || !estimateResult.success) {
       const confirmed = window.confirm(
-        `Warning: This operation will cost approximately $${estimateResult?.cost} USD.\n\nAre you sure you want to proceed?`
+        'No cost estimate is available for the current range. The cost of this operation is unknown.\n\nAre you sure you want to proceed?'
+      )
+      if (!confirmed) return
+    } else if (parseFloat(estimateResult.cost) > 1) {
+      const confirmed = window.confirm(
+        `Warning: This operation will cost approximately $${estimateResult.cost} USD.\n\nAre you sure you want to proceed?`
       )
       if (!confirmed) return
     }
@@ -148,6 +193,10 @@ export function PoolSnapshotsBackfill() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPayload()),
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setBackfillResult(data)
 
@@ -165,6 +214,7 @@ export function PoolSnapshotsBackfill() {
   function reset() {
     setEstimateResult(null)
     setBackfillResult(null)
+    setValidationError(null)
   }
 
   async function copyPoolNames() {
@@ -175,14 +225,18 @@ export function PoolSnapshotsBackfill() {
     }
   }
 
-  async function runEmissionApyBackfill() {
-    setRunningEmissionApy(true)
+  async function runEmissionApyBackfill(type: 'lending' | 'backstop') {
+    setRunningEmissionApy(type)
     setEmissionApyResult(null)
     try {
-      const response = await fetch('/api/emission-apy/backfill/lending', {
+      const response = await fetch(`/api/emission-apy/backfill/${type}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setEmissionApyResult(data)
     } catch (error) {
@@ -193,7 +247,7 @@ export function PoolSnapshotsBackfill() {
         duration_ms: 0,
       })
     } finally {
-      setRunningEmissionApy(false)
+      setRunningEmissionApy(null)
     }
   }
 
@@ -250,7 +304,7 @@ export function PoolSnapshotsBackfill() {
             <Select
               id="rangeType"
               value={rangeType}
-              onChange={(e) => setRangeType(e.target.value as RangeType)}
+              onChange={(e) => { setRangeType(e.target.value as RangeType); clearEstimates() }}
             >
               <option value="days">Days Back (from today)</option>
               <option value="dateRange">Specific Date Range</option>
@@ -264,7 +318,7 @@ export function PoolSnapshotsBackfill() {
                 id="daysBack"
                 type="number"
                 value={daysBack}
-                onChange={(e) => setDaysBack(e.target.value)}
+                onChange={(e) => { setDaysBack(e.target.value); clearEstimates() }}
                 min="1"
               />
               <p className="text-xs text-muted-foreground">Number of days to look back from today</p>
@@ -279,7 +333,7 @@ export function PoolSnapshotsBackfill() {
                   id="startDate"
                   type="date"
                   value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
+                  onChange={(e) => { setStartDate(e.target.value); clearEstimates() }}
                 />
               </div>
               <div className="space-y-2">
@@ -288,7 +342,7 @@ export function PoolSnapshotsBackfill() {
                   id="endDate"
                   type="date"
                   value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
+                  onChange={(e) => { setEndDate(e.target.value); clearEstimates() }}
                 />
               </div>
             </div>
@@ -331,6 +385,15 @@ export function PoolSnapshotsBackfill() {
             )}
           </Button>
         </div>
+
+        {/* Validation Error */}
+        {validationError && (
+          <Alert variant="destructive">
+            <XCircle className="h-4 w-4" />
+            <AlertTitle>Invalid Range</AlertTitle>
+            <AlertDescription>{validationError}</AlertDescription>
+          </Alert>
+        )}
 
         {/* Estimate Result */}
         {estimateResult && estimateResult.success && (
@@ -455,32 +518,50 @@ export function PoolSnapshotsBackfill() {
         )}
 
         {/* Emission APY Backfill Section */}
-        {backfillResult?.success && (
-          <div className="border-t pt-6 mt-6">
+        <div className="border-t pt-6 mt-6">
             <div className="flex items-center gap-2 mb-4">
               <TrendingUp className="h-5 w-5" />
-              <h3 className="text-lg font-semibold">Calculate Lending Emission APY</h3>
+              <h3 className="text-lg font-semibold">Calculate Emission APY</h3>
             </div>
             <p className="text-sm text-muted-foreground mb-4">
-              After backfilling pool snapshots, run this to calculate historical BLND emission APY for lending supply/borrow using the b_supply/d_supply values.
+              Calculate historical BLND emission APY. Lending uses pool snapshot b_supply/d_supply values (backfill pool snapshots first); backstop uses backstop event running totals. Refresh emission configs if lending rows stop at an old date.
             </p>
-            <Button
-              onClick={runEmissionApyBackfill}
-              disabled={runningEmissionApy}
-              variant="secondary"
-            >
-              {runningEmissionApy ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Calculating Emission APY...
-                </>
-              ) : (
-                <>
-                  <TrendingUp className="mr-2 h-4 w-4" />
-                  Calculate Lending Emission APY
-                </>
-              )}
-            </Button>
+            <div className="flex gap-3">
+              <Button
+                onClick={() => runEmissionApyBackfill('lending')}
+                disabled={runningEmissionApy !== null}
+                variant="secondary"
+              >
+                {runningEmissionApy === 'lending' ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Calculating Lending APY...
+                  </>
+                ) : (
+                  <>
+                    <TrendingUp className="mr-2 h-4 w-4" />
+                    Calculate Lending Emission APY
+                  </>
+                )}
+              </Button>
+              <Button
+                onClick={() => runEmissionApyBackfill('backstop')}
+                disabled={runningEmissionApy !== null}
+                variant="secondary"
+              >
+                {runningEmissionApy === 'backstop' ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Calculating Backstop APY...
+                  </>
+                ) : (
+                  <>
+                    <TrendingUp className="mr-2 h-4 w-4" />
+                    Calculate Backstop Emission APY
+                  </>
+                )}
+              </Button>
+            </div>
 
             {emissionApyResult && emissionApyResult.success && (
               <Alert variant="success" className="mt-4">
@@ -514,8 +595,7 @@ export function PoolSnapshotsBackfill() {
                 </AlertDescription>
               </Alert>
             )}
-          </div>
-        )}
+        </div>
       </CardContent>
     </Card>
   )

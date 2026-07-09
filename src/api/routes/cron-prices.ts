@@ -9,15 +9,11 @@
  */
 
 import { Router } from "express";
-import { Pool } from "pg";
+import crypto from "crypto";
+import { pool } from "../../config/database";
 import { DailyPriceCaptureService } from "../../services/daily-price-capture";
 
 const router = Router();
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes("neon") ? { rejectUnauthorized: false } : undefined,
-});
 
 /**
  * POST /api/cron/capture-prices
@@ -26,11 +22,24 @@ const pool = new Pool({
  * Requires CRON_SECRET header for authentication
  */
 router.post("/capture-prices", async (req, res) => {
-  // Verify cron secret
+  // Verify cron secret (fail closed: the endpoint is unusable until
+  // CRON_SECRET is configured, rather than silently unauthenticated)
   const authHeader = req.headers.authorization;
   const cronSecret = process.env.CRON_SECRET;
 
-  if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+  if (!cronSecret) {
+    console.error("[cron] CRON_SECRET is not configured - rejecting request");
+    return res.status(503).json({
+      error: "Service Unavailable",
+      message: "CRON_SECRET is not configured on the server",
+    });
+  }
+
+  // Hash both sides so timingSafeEqual gets equal-length buffers
+  const provided = crypto.createHash("sha256").update(String(authHeader ?? "")).digest();
+  const expected = crypto.createHash("sha256").update(`Bearer ${cronSecret}`).digest();
+
+  if (!crypto.timingSafeEqual(provided, expected)) {
     return res.status(401).json({
       error: "Unauthorized",
       message: "Invalid or missing CRON_SECRET",

@@ -68,6 +68,7 @@ function CopyableAddress({ address }: { address: string }) {
         onClick={handleCopy}
         className="text-muted-foreground hover:text-foreground transition-colors"
         title="Copy address"
+        aria-label="Copy address"
       >
         {copied ? (
           <Check className="h-3 w-3 text-green-500" />

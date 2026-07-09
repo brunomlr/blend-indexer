@@ -2,13 +2,22 @@ name: Daily Data Capture
 
 on:
   schedule:
-    # Run daily at midnight UTC
-    - cron: '0 0 * * *'
+    # Daily shortly after midnight UTC. Offset from the top of the hour:
+    # 00:00 is GitHub's most congested cron slot and runs there get delayed
+    # or occasionally skipped entirely.
+    - cron: '17 0 * * *'
   workflow_dispatch: # Manual trigger
+
+# Never run two captures at once (e.g. manual dispatch overlapping the
+# scheduled run); queue instead of cancelling so no day is skipped.
+concurrency:
+  group: daily-data-capture
+  cancel-in-progress: false
 
 jobs:
   capture-daily-data:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -30,13 +39,18 @@ jobs:
           STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}
         run: npx ts-node src/scripts/capture-daily-prices.ts
 
+      # Run even if price capture partially failed - it uses whatever prices
+      # were captured (and warns on missing ones)
       - name: Calculate daily BLND emission APY
+        if: ${{ !cancelled() }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}
         run: npx ts-node src/scripts/backfill-emission-apy.ts --today
 
+      # Independent of the price capture - run even if earlier steps failed
       - name: Capture backstop pool snapshots
+        if: ${{ !cancelled() }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           STELLAR_RPC_URL: ${{ secrets.STELLAR_RPC_URL }}

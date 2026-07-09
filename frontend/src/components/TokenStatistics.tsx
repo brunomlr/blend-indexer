@@ -39,6 +39,10 @@ export function TokenStatistics() {
     setError(null)
     try {
       const response = await fetch('/api/token-statistics')
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data: StatisticsResponse = await response.json()
       if (data.success) {
         setSources(data.sources)

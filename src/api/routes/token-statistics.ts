@@ -1,11 +1,7 @@
 import { Router } from "express";
-import { Pool } from "pg";
+import { pool } from "../../config/database";
 
 const router = Router();
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes("neon") ? { rejectUnauthorized: false } : undefined,
-});
 
 interface TokenStatistic {
   asset_address: string;

@@ -628,6 +628,9 @@ ${limitClause}
           bid_amount: row.bid_amount || null,
           lot_asset: row.lot_asset || null,
           lot_amount: row.lot_amount || null,
+          // Multi-asset bid/lot data is not extracted by the BigQuery query
+          bid_assets: null,
+          lot_assets: null,
           // Data source
           src: 'bq',
         };

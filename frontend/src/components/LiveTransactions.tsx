@@ -94,7 +94,7 @@ function formatAmount(amount: string | null): string {
 
 function formatTime(iso: string): string {
   // Ensure UTC interpretation if the timestamp lacks a timezone suffix
-  const raw = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z"
+  const raw = /([+-]\d{2}:?\d{2}|Z)$/.test(iso) ? iso : iso + "Z"
   const d = new Date(raw)
   return d.toLocaleString(undefined, {
     month: "short",
@@ -119,7 +119,7 @@ export function LiveTransactions() {
     return map
   }, [tokens])
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading, isFetching, isError, error } = useQuery({
     queryKey: ["live-transactions", selectedPool, includeActions, includeBackstop],
     queryFn: async ({ signal }) => {
       const params = new URLSearchParams({
@@ -243,6 +243,14 @@ export function LiveTransactions() {
           </div>
         )}
 
+        {/* Error banner (shown when a refetch fails while stale data is still displayed) */}
+        {selectedPool && !isLoading && isError && rows.length > 0 && (
+          <div className="mb-4 p-3 rounded-md border border-red-900/50 bg-red-900/20 text-red-400 text-sm">
+            Failed to refresh transactions
+            {error instanceof Error ? `: ${error.message}` : ""}. Retrying automatically.
+          </div>
+        )}
+
         {/* Table */}
         {selectedPool && !isLoading && (
           <div className="rounded-md border">
@@ -261,13 +269,20 @@ export function LiveTransactions() {
               <TableBody>
                 {rows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-zinc-500 py-12">
-                      No transactions found for this pool
-                    </TableCell>
+                    {isError ? (
+                      <TableCell colSpan={7} className="text-center text-red-400 py-12">
+                        Failed to load transactions
+                        {error instanceof Error ? `: ${error.message}` : ""}
+                      </TableCell>
+                    ) : (
+                      <TableCell colSpan={7} className="text-center text-zinc-500 py-12">
+                        No transactions found for this pool
+                      </TableCell>
+                    )}
                   </TableRow>
                 ) : (
                   rows.map((row) => (
-                    <TableRow key={row.id}>
+                    <TableRow key={`${row.source}-${row.id}`}>
                       <TableCell className="text-xs text-zinc-400 whitespace-nowrap">
                         {formatTime(row.time)}
                       </TableCell>

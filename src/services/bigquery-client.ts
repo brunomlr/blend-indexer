@@ -1,6 +1,7 @@
 import { BigQuery } from '@google-cloud/bigquery';
 import dotenv from 'dotenv';
 import path from 'path';
+import { positionEntryExpr, positionIndexColumns, POSITIONS_OUTER_INDEX, RESCONFIG_MIN_CLOSED_AT } from '../utils/bigquery-sql';
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
@@ -280,14 +281,11 @@ position_changes AS (
     ledger_entry_change,
     deleted,
     JSON_VALUE(key_decoded, '$.vec[1].address') AS user_address,
-    -- Extract position values for the specified reserve index
-    -- Positions map structure (alphabetically sorted):
-    -- Index 0: collateral (map of reserve_id -> amount)
-    -- Index 1: liabilities (map of reserve_id -> amount)
-    -- Index 2: supply (map of reserve_id -> amount)
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[2].val.map[${reserveIndex}].val.i128') AS FLOAT64) AS supply_btokens_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[0].val.map[${reserveIndex}].val.i128') AS FLOAT64) AS collateral_btokens_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[1].val.map[${reserveIndex}].val.i128') AS FLOAT64) AS liabilities_dtokens_raw
+    -- Extract position values for the specified reserve index, matched by
+    -- map key (inner maps are sparse - array position != reserve index)
+    ${positionEntryExpr(POSITIONS_OUTER_INDEX.supply, reserveIndex)} AS supply_btokens_raw,
+    ${positionEntryExpr(POSITIONS_OUTER_INDEX.collateral, reserveIndex)} AS collateral_btokens_raw,
+    ${positionEntryExpr(POSITIONS_OUTER_INDEX.liabilities, reserveIndex)} AS liabilities_dtokens_raw
   FROM \`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${BIGQUERY_TABLE}\`
   WHERE
 ${whereClause}
@@ -655,11 +653,9 @@ ORDER BY reserve_index
 
     const whereClause = filters.map(f => `    ${f}`).join('\n    AND ');
 
-    // Generate column extractions for each index (supply, collateral, liabilities)
-    const indexColumns = indices.map(idx => `
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[2].val.map[${idx}].val.i128') AS FLOAT64) AS supply_${idx}_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[0].val.map[${idx}].val.i128') AS FLOAT64) AS collateral_${idx}_raw,
-    SAFE_CAST(JSON_VALUE(val_decoded, '$.map[1].val.map[${idx}].val.i128') AS FLOAT64) AS liabilities_${idx}_raw`).join(',');
+    // Generate column extractions for each index (matched by map key, not
+    // array position - Positions inner maps are sparse)
+    const indexColumns = positionIndexColumns(indices);
 
     const query = `
 -- WIDE FORMAT QUERY: Extracts all indices as separate columns - cleaner than UNNEST
@@ -899,34 +895,23 @@ ORDER BY change_ledger DESC
         console.log('Fetching all assets from BigQuery (WIDE FORMAT - no SQL pivoting)...');
         console.log(`  Pool: ${params.poolId.substring(0, 8)}...`);
 
-        // PHASE 1: Get exact indices and asset mapping WITHIN THE DATE RANGE
-        console.log('  Phase 1: Querying ResConfig for indices and asset mapping (filtered by date range)...');
-
-        // Build date filter for ResConfig query
-        const { daysBack = 90, startDate, endDate } = params;
-        let dateFilter = '';
-
-        if (startDate && endDate) {
-          dateFilter = `AND closed_at >= TIMESTAMP('${this.escapeSqlString(startDate)}')
-  AND closed_at < TIMESTAMP_ADD(TIMESTAMP('${this.escapeSqlString(endDate)}'), INTERVAL 1 DAY)`;
-        } else if (startDate) {
-          dateFilter = `AND closed_at >= TIMESTAMP('${this.escapeSqlString(startDate)}')`;
-        } else if (endDate) {
-          dateFilter = `AND closed_at < TIMESTAMP_ADD(TIMESTAMP('${this.escapeSqlString(endDate)}'), INTERVAL 1 DAY)
-  AND closed_at >= TIMESTAMP_SUB(TIMESTAMP('${this.escapeSqlString(endDate)}'), INTERVAL ${daysBack} DAY)`;
-        } else {
-          dateFilter = `AND closed_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${daysBack} DAY)`;
-        }
+        // PHASE 1: Get exact indices and asset mapping.
+        // NOT filtered by the backfill window: contract_data is a change
+        // stream, so a reserve whose config didn't change inside the window
+        // would be invisible and silently skipped. Bounded only by the V2
+        // launch date so BigQuery can still prune blocks (see
+        // RESCONFIG_MIN_CLOSED_AT).
+        console.log('  Phase 1: Querying ResConfig for indices and asset mapping...');
 
         const indicesQuery = `
-SELECT
+SELECT DISTINCT
   SAFE_CAST(JSON_VALUE(val_decoded, '$.map[3].val.u32') AS INT64) AS reserve_index,
   JSON_VALUE(key_decoded, '$.vec[1].address') AS asset_address
 FROM \`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${BIGQUERY_TABLE}\`
 WHERE contract_id = '${this.escapeSqlString(params.poolId)}'
   AND JSON_VALUE(key_decoded, '$.vec[0].symbol') = 'ResConfig'
   AND deleted = false
-  ${dateFilter}
+  AND closed_at >= TIMESTAMP('${RESCONFIG_MIN_CLOSED_AT}')
 ORDER BY reserve_index
         `.trim();
 
@@ -935,7 +920,9 @@ ORDER BY reserve_index
         const indices: number[] = [];
 
         for (const row of mappingRows as any[]) {
-          if (row.reserve_index !== null) {
+          // Skip duplicates (repeated ResConfig changes for the same reserve
+          // would otherwise fan out the pivot into duplicate rows)
+          if (row.reserve_index !== null && !indexToAsset.has(row.reserve_index)) {
             indices.push(row.reserve_index);
             indexToAsset.set(row.reserve_index, row.asset_address);
           }

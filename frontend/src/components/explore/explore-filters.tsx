@@ -80,13 +80,30 @@ export function ExploreFilters({
   isLoading,
 }: ExploreFiltersProps) {
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS)
+  const [validationError, setValidationError] = useState<string | null>(null)
 
   const handleApplyFilters = () => {
+    if (filters.query === "deposits") {
+      if (!filters.assetAddress) {
+        setValidationError("Select an asset for the deposits query")
+        return
+      }
+      if (filters.minAmount === undefined) {
+        setValidationError("Enter a minimum deposit amount for the deposits query")
+        return
+      }
+    }
+    if (filters.query === "events" && filters.minCount === undefined) {
+      setValidationError("Enter a minimum event count for the events query")
+      return
+    }
+    setValidationError(null)
     onApplyFilters(filters)
   }
 
   const handleReset = () => {
     setFilters(DEFAULT_FILTERS)
+    setValidationError(null)
   }
 
   const toggleEventType = (eventType: string) => {
@@ -99,6 +116,7 @@ export function ExploreFilters({
   }
 
   const showAssetFilter = ["balance"].includes(filters.query)
+  const showDepositsFilter = ["deposits"].includes(filters.query)
   const showPoolFilter = ["top-depositors"].includes(filters.query)
   const showCountFilter = ["events"].includes(filters.query)
   const showEventTypes = ["events"].includes(filters.query)
@@ -124,7 +142,15 @@ export function ExploreFilters({
           <Tabs
             value={filters.query}
             onValueChange={(value) =>
-              setFilters((prev) => ({ ...prev, query: value as ExploreQueryType }))
+              setFilters((prev) => ({
+                ...prev,
+                query: value as ExploreQueryType,
+                // Populate a sensible default so the events query has the required minCount
+                minCount:
+                  value === "events" && prev.minCount === undefined
+                    ? 1
+                    : prev.minCount,
+              }))
             }
           >
             <TabsList className="w-full flex-wrap h-auto gap-1 p-1">
@@ -171,6 +197,53 @@ export function ExploreFilters({
           </div>
         </div>
 
+        {/* Deposits Filters - required asset + minimum amount */}
+        {showDepositsFilter && (
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground">
+                Asset
+              </label>
+              <Select
+                value={filters.assetAddress || ""}
+                onValueChange={(value) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    assetAddress: value || undefined,
+                  }))
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select token..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {tokens.map((token) => (
+                    <SelectItem key={token.asset_address} value={token.asset_address}>
+                      {token.symbol}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-muted-foreground">
+                Minimum Deposit Amount
+              </label>
+              <Input
+                type="number"
+                placeholder="Enter amount..."
+                value={filters.minAmount ?? ""}
+                onChange={(e) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    minAmount: e.target.value ? parseFloat(e.target.value) : undefined,
+                  }))
+                }
+              />
+            </div>
+          </div>
+        )}
+
         {/* Token Filters - Multi-select with individual amounts */}
         {showAssetFilter && (
           <div className="space-y-3">
@@ -202,6 +275,7 @@ export function ExploreFilters({
                       variant="ghost"
                       size="sm"
                       className="h-8 w-8 p-0"
+                      aria-label={`Remove ${tokenFilter.symbol} filter`}
                       onClick={() => {
                         setFilters((prev) => ({
                           ...prev,
@@ -439,6 +513,11 @@ export function ExploreFilters({
               </Button>
             </div>
           </div>
+        )}
+
+        {/* Validation Error */}
+        {validationError && (
+          <p className="text-sm text-red-500">{validationError}</p>
         )}
 
         {/* Apply Filters Button */}

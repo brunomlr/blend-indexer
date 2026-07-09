@@ -62,6 +62,63 @@ function parseAndValidateInt(value: any, min: number, max: number, name: string)
   return parsed;
 }
 
+interface DateRangeBodyParams {
+  startDate?: string;
+  endDate?: string;
+  poolAddress?: string;
+  limit?: number;
+}
+
+/**
+ * Validate the optional startDate/endDate/poolAddress/limit body params shared
+ * by the lp-prices and backstop-q4w routes. Sends a 400 response and returns
+ * null when any param is invalid.
+ */
+function validateDateRangeBody(req: Request, res: Response): DateRangeBodyParams | null {
+  const body = req.body ?? {};
+  const params: DateRangeBodyParams = {};
+
+  if (body.startDate !== undefined) {
+    if (typeof body.startDate !== 'string' || !isValidDateFormat(body.startDate)) {
+      res.status(400).json({ success: false, error: 'Invalid startDate: must be in YYYY-MM-DD format' });
+      return null;
+    }
+    params.startDate = body.startDate;
+  }
+
+  if (body.endDate !== undefined) {
+    if (typeof body.endDate !== 'string' || !isValidDateFormat(body.endDate)) {
+      res.status(400).json({ success: false, error: 'Invalid endDate: must be in YYYY-MM-DD format' });
+      return null;
+    }
+    params.endDate = body.endDate;
+  }
+
+  if (params.startDate && params.endDate && params.startDate > params.endDate) {
+    res.status(400).json({ success: false, error: 'Invalid date range: startDate must be before or equal to endDate' });
+    return null;
+  }
+
+  if (body.poolAddress !== undefined) {
+    if (typeof body.poolAddress !== 'string' || !isValidStellarAddress(body.poolAddress)) {
+      res.status(400).json({ success: false, error: 'Invalid poolAddress: must be a valid Stellar address' });
+      return null;
+    }
+    params.poolAddress = body.poolAddress;
+  }
+
+  if (body.limit !== undefined) {
+    try {
+      params.limit = parseAndValidateInt(body.limit, 1, 10000000, 'limit');
+    } catch (error) {
+      res.status(400).json({ success: false, error: error instanceof Error ? error.message : 'Invalid limit' });
+      return null;
+    }
+  }
+
+  return params;
+}
+
 /**
  * POST /api/bigquery/backfill
  * Run BigQuery backfill with options
@@ -1293,11 +1350,29 @@ router.post('/actions/estimate', async (req: Request, res: Response) => {
     if (req.body.endLedger !== undefined) {
       params.endLedger = parseAndValidateInt(req.body.endLedger, 0, Number.MAX_SAFE_INTEGER, 'endLedger');
     }
-    if (req.body.startDate && isValidDateFormat(req.body.startDate)) {
+    if (req.body.startDate) {
+      if (typeof req.body.startDate !== 'string' || !isValidDateFormat(req.body.startDate)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid startDate: must be in YYYY-MM-DD format',
+        });
+      }
       params.startDate = req.body.startDate;
     }
-    if (req.body.endDate && isValidDateFormat(req.body.endDate)) {
+    if (req.body.endDate) {
+      if (typeof req.body.endDate !== 'string' || !isValidDateFormat(req.body.endDate)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid endDate: must be in YYYY-MM-DD format',
+        });
+      }
       params.endDate = req.body.endDate;
+    }
+    if (params.startDate && params.endDate && params.startDate > params.endDate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid date range: startDate must be before or equal to endDate',
+      });
     }
     if (req.body.limit !== undefined) {
       params.limit = parseAndValidateInt(req.body.limit, 1, 10000000, 'limit');
@@ -2034,6 +2109,13 @@ router.get('/lp-prices/query', async (req: Request, res: Response) => {
     const startDate = (req.query.startDate as string) || '2025-04-15';
     const endDate = req.query.endDate as string | undefined;
 
+    if (!isValidDateFormat(startDate) || (endDate !== undefined && !isValidDateFormat(endDate))) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid date: startDate/endDate must be in YYYY-MM-DD format',
+      });
+    }
+
     const query = lpService.getBigQueryQuery(startDate, endDate);
 
     res.json({
@@ -2062,8 +2144,11 @@ router.get('/lp-prices/query', async (req: Request, res: Response) => {
  */
 router.get('/lp-prices/data', async (req: Request, res: Response) => {
   try {
-    const limit = req.query.limit ? parseInt(req.query.limit as string) : 100;
-    const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
+    // Clamp and NaN-guard: raw parseInt results would flow into LIMIT/OFFSET
+    const rawLimit = parseInt(req.query.limit as string, 10);
+    const rawOffset = parseInt(req.query.offset as string, 10);
+    const limit = isNaN(rawLimit) ? 100 : Math.min(Math.max(rawLimit, 1), 1000);
+    const offset = isNaN(rawOffset) ? 0 : Math.max(rawOffset, 0);
 
     const result = await dbPool.query(`
       SELECT
@@ -2100,7 +2185,9 @@ router.get('/lp-prices/data', async (req: Request, res: Response) => {
  */
 router.post('/lp-prices/estimate', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate } = req.body;
+    const params = validateDateRangeBody(req, res);
+    if (!params) return;
+    const { startDate, endDate } = params;
 
     const lpService = new LpPriceBackfillService(dbPool);
     const estimate = await lpService.getCostEstimate({ startDate, endDate });
@@ -2124,7 +2211,9 @@ router.post('/lp-prices/estimate', async (req: Request, res: Response) => {
  */
 router.post('/lp-prices/simulate', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, limit } = req.body;
+    const params = validateDateRangeBody(req, res);
+    if (!params) return;
+    const { startDate, endDate, limit } = params;
 
     const lpService = new LpPriceBackfillService(dbPool);
     const result = await lpService.simulate({ startDate, endDate, limit });
@@ -2152,7 +2241,9 @@ router.post('/lp-prices/simulate', async (req: Request, res: Response) => {
  */
 router.post('/lp-prices/backfill', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, limit } = req.body;
+    const params = validateDateRangeBody(req, res);
+    if (!params) return;
+    const { startDate, endDate, limit } = params;
 
     const lpService = new LpPriceBackfillService(dbPool);
     const result = await lpService.runFromBigQuery({ startDate, endDate, limit });
@@ -2272,6 +2363,19 @@ router.get('/backstop-q4w/query', async (req: Request, res: Response) => {
     const endDate = req.query.endDate as string | undefined;
     const poolAddress = req.query.poolAddress as string | undefined;
 
+    if (!isValidDateFormat(startDate) || (endDate !== undefined && !isValidDateFormat(endDate))) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid date: startDate/endDate must be in YYYY-MM-DD format',
+      });
+    }
+    if (poolAddress !== undefined && !isValidStellarAddress(poolAddress)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid poolAddress: must be a valid Stellar address',
+      });
+    }
+
     const query = backstopQ4wBackfillService.getBigQueryQuery({ startDate, endDate, poolAddress });
 
     res.json({
@@ -2336,7 +2440,9 @@ router.get('/backstop-q4w/data', async (req: Request, res: Response) => {
  */
 router.post('/backstop-q4w/estimate', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, poolAddress } = req.body;
+    const params = validateDateRangeBody(req, res);
+    if (!params) return;
+    const { startDate, endDate, poolAddress } = params;
 
     const estimate = await backstopQ4wBackfillService.getCostEstimate({
       startDate,
@@ -2363,7 +2469,9 @@ router.post('/backstop-q4w/estimate', async (req: Request, res: Response) => {
  */
 router.post('/backstop-q4w/simulate', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, poolAddress, limit } = req.body;
+    const params = validateDateRangeBody(req, res);
+    if (!params) return;
+    const { startDate, endDate, poolAddress, limit } = params;
 
     const result = await backstopQ4wBackfillService.simulate({
       startDate,
@@ -2395,7 +2503,9 @@ router.post('/backstop-q4w/simulate', async (req: Request, res: Response) => {
  */
 router.post('/backstop-q4w/backfill', async (req: Request, res: Response) => {
   try {
-    const { startDate, endDate, poolAddress, limit } = req.body;
+    const params = validateDateRangeBody(req, res);
+    if (!params) return;
+    const { startDate, endDate, poolAddress, limit } = params;
 
     const result = await backstopQ4wBackfillService.runBackfill({
       startDate,

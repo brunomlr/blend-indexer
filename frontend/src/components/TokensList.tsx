@@ -64,6 +64,10 @@ export function TokensList() {
     setError(null)
     try {
       const response = await fetch('/api/tokens')
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data: TokensResponse = await response.json()
       if (data.success) {
         setTokens(data.tokens)
@@ -91,6 +95,10 @@ export function TokensList() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data: BackfillResponse = await response.json()
       setBackfillResult(data)
       if (!data.success) {
@@ -114,10 +122,6 @@ export function TokensList() {
   const coingeckoTokens = tokens.filter(t => t.coingecko_id && !t.pegged_currency)
   const peggedTokens = tokens.filter(t => t.pegged_currency)
   const backfillableTokens = [...coingeckoTokens, ...peggedTokens]
-
-  // Debug: log token counts
-  console.log('[TokensList] Total tokens:', tokens.length, 'CoinGecko:', coingeckoTokens.length, 'Pegged:', peggedTokens.length)
-  console.log('[TokensList] Pegged tokens:', peggedTokens.map(t => `${t.symbol}(${t.pegged_currency})`))
 
   return (
     <div className="space-y-6">

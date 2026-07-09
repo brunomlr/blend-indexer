@@ -6,34 +6,31 @@
  */
 
 import { Router } from "express";
-import { Pool } from "pg";
+import { pool } from "../../config/database";
 
 const router = Router();
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL?.includes("neon") ? { rejectUnauthorized: false } : undefined,
-});
 
 const COINGECKO_BASE = "https://api.coingecko.com/api/v3";
 const RATE_LIMIT_MS = 2500; // 2.5 seconds between requests
 
-// Etherfuse bond ID for TESOURO token
-const ETHERFUSE_BOND_ID = "BRNTNaZeTJANz9PeuD8drNbBHwGgg7ZTjiQYrFgWQ48p";
-const ETHERFUSE_API_URL = `https://api.etherfuse.com/lookup/bonds/history/${ETHERFUSE_BOND_ID}`;
+// Etherfuse bond IDs by token symbol
+const ETHERFUSE_BONDS: Record<string, string> = {
+  TESOURO: "BRNTNaZeTJANz9PeuD8drNbBHwGgg7ZTjiQYrFgWQ48p",
+  USTRY: "USTRYnGgcHAhdWsanv8BG6vHGd4p7UGgoB9NRd8ei7j",
+};
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Fetch historical prices from Etherfuse for TESOURO
+// Fetch historical prices from Etherfuse for a bond token
 // Returns a map of date (YYYY-MM-DD) -> USD price
-async function fetchEtherfuseHistory(): Promise<Map<string, number>> {
+async function fetchEtherfuseHistory(symbol: string, bondId: string): Promise<Map<string, number>> {
   const prices = new Map<string, number>();
 
-  console.log(`[tokens] Fetching TESOURO prices from Etherfuse...`);
+  console.log(`[tokens] Fetching ${symbol} prices from Etherfuse...`);
 
-  const response = await fetch(ETHERFUSE_API_URL);
+  const response = await fetch(`https://api.etherfuse.com/lookup/bonds/history/${bondId}`);
   if (!response.ok) {
     console.error(`[tokens] Failed to fetch Etherfuse: ${response.status}`);
     return prices;
@@ -52,12 +49,12 @@ async function fetchEtherfuseHistory(): Promise<Map<string, number>> {
     const tokenPrice = parseFloat(point.tokenPrice);
     const usdExchangeRate = parseFloat(point.usdExchangeRate);
 
-    // Calculate USD price: tokenPrice (BRL) / usdExchangeRate (BRL/USD) = USD
+    // Calculate USD price: tokenPrice (local currency) / usdExchangeRate (currency/USD) = USD
     const usdPrice = tokenPrice / usdExchangeRate;
     prices.set(priceDate, usdPrice);
   }
 
-  console.log(`[tokens] Got ${prices.size} TESOURO price points from Etherfuse`);
+  console.log(`[tokens] Got ${prices.size} ${symbol} price points from Etherfuse`);
   return prices;
 }
 
@@ -315,30 +312,30 @@ router.post("/backfill-prices", async (req, res) => {
       }
     }
 
-    // Also backfill TESOURO from Etherfuse
+    // Also backfill Etherfuse bond tokens
     let etherfuseInserted = 0;
 
-    // Check if we should backfill TESOURO
-    const tesouroQuery = tokenAddress
-      ? `SELECT asset_address, symbol FROM tokens WHERE symbol = 'TESOURO' AND asset_address = $1`
-      : `SELECT asset_address, symbol FROM tokens WHERE symbol = 'TESOURO'`;
-    const tesouroParams = tokenAddress ? [tokenAddress] : [];
-    const tesouroResult = await pool.query(tesouroQuery, tesouroParams);
+    const bondSymbols = Object.keys(ETHERFUSE_BONDS);
+    const bondQuery = tokenAddress
+      ? `SELECT asset_address, symbol FROM tokens WHERE symbol = ANY($1) AND asset_address = $2`
+      : `SELECT asset_address, symbol FROM tokens WHERE symbol = ANY($1)`;
+    const bondParams = tokenAddress ? [bondSymbols, tokenAddress] : [bondSymbols];
+    const bondResult = await pool.query(bondQuery, bondParams);
 
-    if (tesouroResult.rows.length > 0) {
-      const tesouro = tesouroResult.rows[0];
-      console.log(`[tokens] Backfilling TESOURO from Etherfuse...`);
+    for (const bondToken of bondResult.rows) {
+      console.log(`[tokens] Backfilling ${bondToken.symbol} from Etherfuse...`);
 
       try {
-        const etherfusePrices = await fetchEtherfuseHistory();
+        const etherfusePrices = await fetchEtherfuseHistory(bondToken.symbol, ETHERFUSE_BONDS[bondToken.symbol]);
 
         // Get existing dates
         const existingResult = await pool.query(`
           SELECT price_date::text FROM daily_token_prices WHERE token_address = $1
-        `, [tesouro.asset_address]);
+        `, [bondToken.asset_address]);
         const existingDates = new Set(existingResult.rows.map((r: any) => r.price_date.split('T')[0]));
 
         // Filter to date range and insert
+        let inserted = 0;
         for (const [priceDate, usdPrice] of etherfusePrices) {
           const priceDateObj = new Date(priceDate);
           if (priceDateObj < start || priceDateObj > end) continue;
@@ -349,14 +346,15 @@ router.post("/backfill-prices", async (req, res) => {
             VALUES ($1, $2, $3, 'etherfuse')
             ON CONFLICT (token_address, price_date)
             DO UPDATE SET usd_price = EXCLUDED.usd_price, source = 'etherfuse'
-          `, [tesouro.asset_address, priceDate, usdPrice]);
+          `, [bondToken.asset_address, priceDate, usdPrice]);
 
-          etherfuseInserted++;
+          inserted++;
         }
 
-        console.log(`[tokens] TESOURO: inserted ${etherfuseInserted} prices from Etherfuse`);
+        etherfuseInserted += inserted;
+        console.log(`[tokens] ${bondToken.symbol}: inserted ${inserted} prices from Etherfuse`);
       } catch (error: any) {
-        console.error(`[tokens] Etherfuse backfill failed: ${error.message}`);
+        console.error(`[tokens] Etherfuse backfill failed for ${bondToken.symbol}: ${error.message}`);
       }
     }
 

@@ -97,6 +97,7 @@ export function BackstopQ4wBackfill() {
   const [backfillResult, setBackfillResult] = useState<BackfillResult | null>(null)
   const [currentQuery, setCurrentQuery] = useState<string | null>(null)
   const [copiedQuery, setCopiedQuery] = useState(false)
+  const [validationError, setValidationError] = useState<string | null>(null)
 
   useEffect(() => {
     loadData()
@@ -109,6 +110,13 @@ export function BackstopQ4wBackfill() {
         fetch('/api/bigquery/backstop-q4w/stats'),
         fetch('/api/bigquery/backstop-q4w/data'),
       ])
+
+      if (!statsRes.ok) {
+        throw new Error(`Failed to load stats: request failed with status ${statsRes.status}`)
+      }
+      if (!dataRes.ok) {
+        throw new Error(`Failed to load data: request failed with status ${dataRes.status}`)
+      }
 
       const statsData = await statsRes.json()
       const poolDataResult = await dataRes.json()
@@ -126,12 +134,32 @@ export function BackstopQ4wBackfill() {
     }
   }
 
+  function clearEstimates() {
+    setEstimateResult(null)
+    setSimulateResult(null)
+    setValidationError(null)
+  }
+
+  function validateRange(): string | null {
+    if (rangeType === 'days') {
+      const days = Number(daysBack)
+      if (!Number.isInteger(days) || days < 1) {
+        return 'Days back must be a whole number of at least 1.'
+      }
+    } else if (rangeType === 'dateRange') {
+      if (!startDate || !endDate) {
+        return 'Both start date and end date are required.'
+      }
+    }
+    return null
+  }
+
   function buildPayload() {
     const payload: Record<string, unknown> = {}
 
     if (rangeType === 'days') {
-      const days = parseInt(daysBack)
-      if (days && days > 0) {
+      const days = Number(daysBack)
+      if (Number.isInteger(days) && days > 0) {
         const end = new Date()
         const start = new Date()
         start.setDate(start.getDate() - days)
@@ -151,6 +179,12 @@ export function BackstopQ4wBackfill() {
   }
 
   async function getEstimate() {
+    const rangeError = validateRange()
+    if (rangeError) {
+      setValidationError(rangeError)
+      return
+    }
+    setValidationError(null)
     setEstimating(true)
     setEstimateResult(null)
     try {
@@ -159,6 +193,10 @@ export function BackstopQ4wBackfill() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPayload()),
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setEstimateResult(data)
       if (data.query) {
@@ -172,6 +210,12 @@ export function BackstopQ4wBackfill() {
   }
 
   async function simulate() {
+    const rangeError = validateRange()
+    if (rangeError) {
+      setValidationError(rangeError)
+      return
+    }
+    setValidationError(null)
     setSimulating(true)
     setSimulateResult(null)
     try {
@@ -181,6 +225,10 @@ export function BackstopQ4wBackfill() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setSimulateResult(data)
       if (data.query) {
@@ -194,10 +242,22 @@ export function BackstopQ4wBackfill() {
   }
 
   async function runBackfill() {
-    const estimatedCost = estimateResult?.cost ? parseFloat(estimateResult.cost) : 0
-    if (estimatedCost > 1) {
+    const rangeError = validateRange()
+    if (rangeError) {
+      setValidationError(rangeError)
+      return
+    }
+    setValidationError(null)
+
+    // Ask for confirmation when there is no current estimate, or when the estimated cost is > $1
+    if (!estimateResult || !estimateResult.success) {
       const confirmed = window.confirm(
-        `Warning: This operation will cost approximately $${estimateResult?.cost} USD.\n\nAre you sure you want to proceed?`
+        'No cost estimate is available for the current range. The cost of this operation is unknown.\n\nAre you sure you want to proceed?'
+      )
+      if (!confirmed) return
+    } else if (parseFloat(estimateResult.cost) > 1) {
+      const confirmed = window.confirm(
+        `Warning: This operation will cost approximately $${estimateResult.cost} USD.\n\nAre you sure you want to proceed?`
       )
       if (!confirmed) return
     }
@@ -210,6 +270,10 @@ export function BackstopQ4wBackfill() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPayload()),
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setBackfillResult(data)
 
@@ -235,6 +299,7 @@ export function BackstopQ4wBackfill() {
     setEstimateResult(null)
     setSimulateResult(null)
     setBackfillResult(null)
+    setValidationError(null)
   }
 
   if (loading) {
@@ -290,7 +355,7 @@ export function BackstopQ4wBackfill() {
             <Select
               id="rangeType"
               value={rangeType}
-              onChange={(e) => setRangeType(e.target.value as RangeType)}
+              onChange={(e) => { setRangeType(e.target.value as RangeType); clearEstimates() }}
             >
               <option value="days">Days Back (from today)</option>
               <option value="dateRange">Specific Date Range</option>
@@ -304,7 +369,7 @@ export function BackstopQ4wBackfill() {
                 id="daysBack"
                 type="number"
                 value={daysBack}
-                onChange={(e) => setDaysBack(e.target.value)}
+                onChange={(e) => { setDaysBack(e.target.value); clearEstimates() }}
                 min="1"
               />
               <p className="text-xs text-muted-foreground">Number of days to look back from today</p>
@@ -319,7 +384,7 @@ export function BackstopQ4wBackfill() {
                   id="startDate"
                   type="date"
                   value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
+                  onChange={(e) => { setStartDate(e.target.value); clearEstimates() }}
                 />
               </div>
               <div className="space-y-2">
@@ -328,7 +393,7 @@ export function BackstopQ4wBackfill() {
                   id="endDate"
                   type="date"
                   value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
+                  onChange={(e) => { setEndDate(e.target.value); clearEstimates() }}
                 />
               </div>
             </div>
@@ -340,7 +405,7 @@ export function BackstopQ4wBackfill() {
               id="poolFilter"
               type="text"
               value={poolFilter}
-              onChange={(e) => setPoolFilter(e.target.value)}
+              onChange={(e) => { setPoolFilter(e.target.value); clearEstimates() }}
               placeholder="C... (leave empty for all pools)"
             />
             <p className="text-xs text-muted-foreground">Filter to a specific pool address</p>
@@ -400,6 +465,15 @@ export function BackstopQ4wBackfill() {
             )}
           </Button>
         </div>
+
+        {/* Validation Error */}
+        {validationError && (
+          <Alert variant="destructive">
+            <XCircle className="h-4 w-4" />
+            <AlertTitle>Invalid Range</AlertTitle>
+            <AlertDescription>{validationError}</AlertDescription>
+          </Alert>
+        )}
 
         {/* Query Display */}
         {currentQuery && (
@@ -588,7 +662,7 @@ export function BackstopQ4wBackfill() {
                         {row.snapshot_date}
                       </TableCell>
                       <TableCell className="text-right font-mono">
-                        <span className={Number(row.q4w_pct) > 10 ? 'text-yellow-500' : Number(row.q4w_pct) > 25 ? 'text-red-500' : ''}>
+                        <span className={Number(row.q4w_pct) > 25 ? 'text-red-500' : Number(row.q4w_pct) > 10 ? 'text-yellow-500' : ''}>
                           {Number(row.q4w_pct).toFixed(2)}%
                         </span>
                       </TableCell>

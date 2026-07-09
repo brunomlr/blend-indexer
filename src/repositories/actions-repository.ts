@@ -272,40 +272,37 @@ export class ActionsRepository {
         ) ON COMMIT DROP
       `);
 
-      // Insert BQ records into temp table
-      const values: any[] = [];
-      const placeholders: string[] = [];
-
-      rows.forEach((row, index) => {
-        const offset = index * 8;
-        placeholders.push(
-          `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8})`
-        );
-        values.push(
-          index,
-          row.transaction_hash,
-          row.pool_id,
-          row.action_type,
-          row.user_address,
-          row.amount_underlying,
-          row.amount_tokens,
-          row.ledger_sequence
-        );
-      });
-
-      // Chunk the insert if needed (65535 / 8 = ~8000 rows max)
+      // Insert BQ records into temp table, chunked to stay under the 65535
+      // parameter limit (8 params per row). Placeholders must be numbered
+      // per chunk - each query's $1 refers to its own values array.
       const CHUNK_SIZE = 8000;
-      for (let i = 0; i < placeholders.length; i += CHUNK_SIZE) {
-        const chunkPlaceholders = placeholders.slice(i, i + CHUNK_SIZE);
-        const chunkValues = values.slice(i * 8, (i + CHUNK_SIZE) * 8);
+      for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+        const chunk = rows.slice(i, i + CHUNK_SIZE);
+        const values: any[] = [];
+        const placeholders: string[] = [];
 
-        if (chunkPlaceholders.length > 0) {
-          await client.query(
-            `INSERT INTO temp_bq_check (idx, transaction_hash, pool_id, action_type, user_address, amount_underlying, amount_tokens, ledger_sequence)
-             VALUES ${chunkPlaceholders.join(', ')}`,
-            chunkValues
+        chunk.forEach((row, chunkIndex) => {
+          const offset = chunkIndex * 8;
+          placeholders.push(
+            `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8})`
           );
-        }
+          values.push(
+            i + chunkIndex, // global idx so match results map back to `rows`
+            row.transaction_hash,
+            row.pool_id,
+            row.action_type,
+            row.user_address,
+            row.amount_underlying,
+            row.amount_tokens,
+            row.ledger_sequence
+          );
+        });
+
+        await client.query(
+          `INSERT INTO temp_bq_check (idx, transaction_hash, pool_id, action_type, user_address, amount_underlying, amount_tokens, ledger_sequence)
+           VALUES ${placeholders.join(', ')}`,
+          values
+        );
       }
 
       // Find indices of BQ records that have matching GS records

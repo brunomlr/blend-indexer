@@ -59,9 +59,11 @@ async function main() {
 
     console.log("═══════════════════════════════════════════════════════════\n");
 
-    // Exit with error code if there were failures
-    if (result.errors.length > 0 && result.pricesInserted === 0) {
-      process.exit(1);
+    // Exit non-zero on ANY error so scheduled runs fail visibly instead of
+    // leaving silent gaps in daily_token_prices. Successfully captured
+    // prices are already saved; downstream workflow steps still run.
+    if (result.errors.length > 0) {
+      process.exitCode = 1;
     }
 
   } catch (error) {

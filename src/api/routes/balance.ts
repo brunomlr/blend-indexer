@@ -43,7 +43,8 @@ router.get('/balance/:user/:asset', async (req: Request, res: Response) => {
 router.get('/balance/:user/:asset/history', async (req: Request, res: Response) => {
   try {
     const { user, asset } = req.params;
-    const days = parseInt(req.query.days as string) || 30;
+    // Clamp: the history query generates a date series row per day per pool
+    const days = Math.min(Math.max(parseInt(req.query.days as string) || 30, 1), 3650);
 
     const history = await userRepository.getUserBalanceHistory(user, asset, days);
 

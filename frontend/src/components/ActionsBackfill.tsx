@@ -106,6 +106,8 @@ export function ActionsBackfill() {
   const [currentQuery, setCurrentQuery] = useState<string | null>(null)
   const [copiedQuery, setCopiedQuery] = useState(false)
   const [csvFile, setCsvFile] = useState<File | null>(null)
+  const [validationError, setValidationError] = useState<string | null>(null)
+  const [fileError, setFileError] = useState<string | null>(null)
 
   useEffect(() => {
     loadConfig()
@@ -114,6 +116,10 @@ export function ActionsBackfill() {
   async function loadConfig() {
     try {
       const response = await fetch('/api/bigquery/actions/config')
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       if (data.success) {
         setConfig(data)
@@ -123,12 +129,38 @@ export function ActionsBackfill() {
     }
   }
 
+  function clearEstimates() {
+    setEstimateResult(null)
+    setSimulateResult(null)
+    setValidationError(null)
+  }
+
+  function validateRange(): string | null {
+    if (rangeType === 'days') {
+      const days = Number(daysBack)
+      if (!Number.isInteger(days) || days < 1) {
+        return 'Days back must be a whole number of at least 1.'
+      }
+    } else if (rangeType === 'dateRange') {
+      if (!startDate || !endDate) {
+        return 'Both start date and end date are required.'
+      }
+    } else if (rangeType === 'ledgerRange') {
+      const start = Number(startLedger)
+      const end = Number(endLedger)
+      if (!startLedger || !endLedger || !Number.isInteger(start) || start <= 0 || !Number.isInteger(end) || end <= 0) {
+        return 'Both start ledger and end ledger must be positive whole numbers.'
+      }
+    }
+    return null
+  }
+
   function buildPayload() {
     const payload: Record<string, unknown> = {}
 
     if (rangeType === 'days') {
-      const days = parseInt(daysBack)
-      if (days && days > 0) {
+      const days = Number(daysBack)
+      if (Number.isInteger(days) && days > 0) {
         const end = new Date()
         const start = new Date()
         start.setDate(start.getDate() - days)
@@ -139,8 +171,10 @@ export function ActionsBackfill() {
       if (startDate) payload.startDate = startDate
       if (endDate) payload.endDate = endDate
     } else if (rangeType === 'ledgerRange') {
-      if (startLedger) payload.startLedger = parseInt(startLedger)
-      if (endLedger) payload.endLedger = parseInt(endLedger)
+      const start = Number(startLedger)
+      const end = Number(endLedger)
+      if (Number.isInteger(start) && start > 0) payload.startLedger = start
+      if (Number.isInteger(end) && end > 0) payload.endLedger = end
     }
 
     if (limit) payload.limit = parseInt(limit)
@@ -148,6 +182,12 @@ export function ActionsBackfill() {
   }
 
   async function getEstimate() {
+    const rangeError = validateRange()
+    if (rangeError) {
+      setValidationError(rangeError)
+      return
+    }
+    setValidationError(null)
     setEstimating(true)
     setEstimateResult(null)
     try {
@@ -156,6 +196,10 @@ export function ActionsBackfill() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPayload()),
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setEstimateResult(data)
       if (data.query) {
@@ -169,6 +213,12 @@ export function ActionsBackfill() {
   }
 
   async function simulate() {
+    const rangeError = validateRange()
+    if (rangeError) {
+      setValidationError(rangeError)
+      return
+    }
+    setValidationError(null)
     setSimulating(true)
     setSimulateResult(null)
     try {
@@ -179,6 +229,10 @@ export function ActionsBackfill() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setSimulateResult(data)
       if (data.query) {
@@ -192,11 +246,22 @@ export function ActionsBackfill() {
   }
 
   async function runBackfill() {
-    // Check if estimated cost is > $1 and ask for confirmation
-    const estimatedCost = estimateResult?.cost ? parseFloat(estimateResult.cost) : 0
-    if (estimatedCost > 1) {
+    const rangeError = validateRange()
+    if (rangeError) {
+      setValidationError(rangeError)
+      return
+    }
+    setValidationError(null)
+
+    // Ask for confirmation when there is no current estimate, or when the estimated cost is > $1
+    if (!estimateResult || !estimateResult.success) {
       const confirmed = window.confirm(
-        `Warning: This operation will cost approximately $${estimateResult?.cost} USD.\n\nAre you sure you want to proceed?`
+        'No cost estimate is available for the current range. The cost of this operation is unknown.\n\nAre you sure you want to proceed?'
+      )
+      if (!confirmed) return
+    } else if (parseFloat(estimateResult.cost) > 1) {
+      const confirmed = window.confirm(
+        `Warning: This operation will cost approximately $${estimateResult.cost} USD.\n\nAre you sure you want to proceed?`
       )
       if (!confirmed) return
     }
@@ -209,6 +274,10 @@ export function ActionsBackfill() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildPayload()),
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setBackfillResult(data)
     } catch (error) {
@@ -223,6 +292,8 @@ export function ActionsBackfill() {
     setSimulateResult(null)
     setBackfillResult(null)
     setCsvFile(null)
+    setValidationError(null)
+    setFileError(null)
   }
 
   async function copyQuery() {
@@ -235,16 +306,24 @@ export function ActionsBackfill() {
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
-    if (file && file.type === 'text/csv') {
+    if (!file) return
+    if (file.type === 'text/csv' || file.name.endsWith('.csv')) {
       setCsvFile(file)
+      setFileError(null)
+    } else {
+      setFileError(`"${file.name}" is not a CSV file. Please select a file ending in .csv`)
     }
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault()
     const file = e.dataTransfer.files?.[0]
-    if (file && (file.type === 'text/csv' || file.name.endsWith('.csv'))) {
+    if (!file) return
+    if (file.type === 'text/csv' || file.name.endsWith('.csv')) {
       setCsvFile(file)
+      setFileError(null)
+    } else {
+      setFileError(`"${file.name}" is not a CSV file. Please select a file ending in .csv`)
     }
   }
 
@@ -261,6 +340,10 @@ export function ActionsBackfill() {
         method: 'POST',
         body: formData,
       })
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        throw new Error(errBody?.error || errBody?.message || `Request failed with status ${response.status}`)
+      }
       const data = await response.json()
       setBackfillResult(data)
     } catch (error) {
@@ -330,7 +413,7 @@ export function ActionsBackfill() {
             <Select
               id="rangeType"
               value={rangeType}
-              onChange={(e) => setRangeType(e.target.value as RangeType)}
+              onChange={(e) => { setRangeType(e.target.value as RangeType); clearEstimates() }}
             >
               <option value="days">Days Back (from today)</option>
               <option value="dateRange">Specific Date Range</option>
@@ -345,7 +428,7 @@ export function ActionsBackfill() {
                 id="daysBack"
                 type="number"
                 value={daysBack}
-                onChange={(e) => setDaysBack(e.target.value)}
+                onChange={(e) => { setDaysBack(e.target.value); clearEstimates() }}
                 min="1"
               />
               <p className="text-xs text-muted-foreground">Number of days to look back from today</p>
@@ -360,7 +443,7 @@ export function ActionsBackfill() {
                   id="startDate"
                   type="date"
                   value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
+                  onChange={(e) => { setStartDate(e.target.value); clearEstimates() }}
                 />
               </div>
               <div className="space-y-2">
@@ -369,7 +452,7 @@ export function ActionsBackfill() {
                   id="endDate"
                   type="date"
                   value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
+                  onChange={(e) => { setEndDate(e.target.value); clearEstimates() }}
                 />
               </div>
             </div>
@@ -383,7 +466,7 @@ export function ActionsBackfill() {
                   id="startLedger"
                   type="number"
                   value={startLedger}
-                  onChange={(e) => setStartLedger(e.target.value)}
+                  onChange={(e) => { setStartLedger(e.target.value); clearEstimates() }}
                   placeholder="e.g., 50000000"
                 />
               </div>
@@ -393,7 +476,7 @@ export function ActionsBackfill() {
                   id="endLedger"
                   type="number"
                   value={endLedger}
-                  onChange={(e) => setEndLedger(e.target.value)}
+                  onChange={(e) => { setEndLedger(e.target.value); clearEstimates() }}
                   placeholder="e.g., 51000000"
                 />
               </div>
@@ -406,7 +489,7 @@ export function ActionsBackfill() {
               id="limit"
               type="number"
               value={limit}
-              onChange={(e) => setLimit(e.target.value)}
+              onChange={(e) => { setLimit(e.target.value); clearEstimates() }}
               placeholder="Leave empty for all rows"
             />
             <p className="text-xs text-muted-foreground">Limit the number of rows to fetch (useful for testing)</p>
@@ -498,6 +581,15 @@ export function ActionsBackfill() {
               )}
             </div>
 
+            {/* File Error */}
+            {fileError && (
+              <Alert variant="destructive">
+                <XCircle className="h-4 w-4" />
+                <AlertTitle>Invalid File</AlertTitle>
+                <AlertDescription>{fileError}</AlertDescription>
+              </Alert>
+            )}
+
             {/* Upload Button */}
             <Button
               onClick={uploadCsv}
@@ -573,6 +665,15 @@ export function ActionsBackfill() {
             )}
           </Button>
         </div>
+        )}
+
+        {/* Validation Error */}
+        {mode === 'query' && validationError && (
+          <Alert variant="destructive">
+            <XCircle className="h-4 w-4" />
+            <AlertTitle>Invalid Range</AlertTitle>
+            <AlertDescription>{validationError}</AlertDescription>
+          </Alert>
         )}
 
         {/* Query Display - in query mode after getting estimate */}

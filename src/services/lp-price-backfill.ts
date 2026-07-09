@@ -10,6 +10,7 @@ import { BigQuery } from "@google-cloud/bigquery";
 import fs from "fs";
 import dotenv from "dotenv";
 import path from "path";
+import { assertValidDate, assertValidLimit } from "../utils/bigquery-validation";
 
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
@@ -95,10 +96,11 @@ export class LpPriceBackfillService {
   }
 
   /**
-   * Get the BigQuery query for fetching LP prices
+   * Render the LP price SQL with the given date expressions (either inline
+   * literals for display or @named parameters for execution)
    */
-  getBigQueryQuery(startDate: string = START_DATE, endDate?: string): string {
-    const endDateClause = endDate ? `AND closed_at < '${endDate}'` : "";
+  private renderQuery(startDateExpr: string, endDateExpr?: string): string {
+    const endDateClause = endDateExpr ? `AND closed_at < ${endDateExpr}` : "";
 
     return `
 WITH total_shares AS (
@@ -110,7 +112,7 @@ WITH total_shares AS (
   FROM \`crypto-stellar.crypto_stellar.contract_data\`
   WHERE contract_id = 'CAS3FL6TLZKDGGSISDBWGGPXT3NRR4DYTZD7YOD3HMYO6LTJUVGRVEAM'
     AND JSON_EXTRACT_SCALAR(key_decoded, '$.vec[0].symbol') = 'TotalShares'
-    AND closed_at >= '${startDate}'
+    AND closed_at >= ${startDateExpr}
     ${endDateClause}
 ),
 record_data AS (
@@ -120,7 +122,7 @@ record_data AS (
   FROM \`crypto-stellar.crypto_stellar.contract_data\`
   WHERE contract_id = 'CAS3FL6TLZKDGGSISDBWGGPXT3NRR4DYTZD7YOD3HMYO6LTJUVGRVEAM'
     AND JSON_EXTRACT_SCALAR(key_decoded, '$.vec[0].symbol') = 'AllRecordData'
-    AND closed_at >= '${startDate}'
+    AND closed_at >= ${startDateExpr}
     ${endDateClause}
 ),
 combined AS (
@@ -140,6 +142,44 @@ FROM combined
 WHERE rn = 1
 ORDER BY price_date
 `.trim();
+  }
+
+  /**
+   * Get the BigQuery query for fetching LP prices (display/copy-paste version
+   * with inline literals; inputs are validated before interpolation)
+   */
+  getBigQueryQuery(startDate: string = START_DATE, endDate?: string): string {
+    assertValidDate("startDate", startDate);
+    if (endDate !== undefined) {
+      assertValidDate("endDate", endDate);
+    }
+    return this.renderQuery(`'${startDate}'`, endDate ? `'${endDate}'` : undefined);
+  }
+
+  /**
+   * Build the executable query using BigQuery named parameters
+   */
+  private buildExecutableQuery(params: LpPriceBackfillParams): {
+    query: string;
+    queryParams: Record<string, string>;
+  } {
+    const startDate = params.startDate || START_DATE;
+    assertValidDate("startDate", startDate);
+    if (params.endDate !== undefined) {
+      assertValidDate("endDate", params.endDate);
+    }
+
+    const queryParams: Record<string, string> = { startDate };
+    if (params.endDate) {
+      queryParams.endDate = params.endDate;
+    }
+
+    const query = this.renderQuery(
+      "TIMESTAMP(@startDate)",
+      params.endDate ? "TIMESTAMP(@endDate)" : undefined
+    );
+
+    return { query, queryParams };
   }
 
   /**
@@ -385,13 +425,14 @@ ORDER BY price_date
   async getCostEstimate(params: LpPriceBackfillParams): Promise<CostEstimate> {
     const startDate = params.startDate || START_DATE;
     const endDate = params.endDate;
-    const query = this.getBigQueryQuery(startDate, endDate);
+    const { query, queryParams } = this.buildExecutableQuery(params);
 
     console.log(`📊 Getting cost estimate for LP price backfill...`);
     console.log(`   Date range: ${startDate} to ${endDate || "now"}`);
 
     const [job] = await this.bigQueryClient.createQueryJob({
       query,
+      params: queryParams,
       useLegacySql: false,
       dryRun: true,
       location: "US",
@@ -409,7 +450,8 @@ ORDER BY price_date
       bytes: estimatedBytes,
       gb: estimatedGB,
       cost: estimatedCost,
-      query,
+      // Return the copy-paste version with inline literals for display
+      query: this.getBigQueryQuery(startDate, endDate),
     };
   }
 
@@ -424,17 +466,17 @@ ORDER BY price_date
       const estimate = await this.getCostEstimate(params);
 
       // Build query with limit for simulation
-      const startDate = params.startDate || START_DATE;
-      const endDate = params.endDate;
-      let query = this.getBigQueryQuery(startDate, endDate);
+      const { query: baseQuery, queryParams } = this.buildExecutableQuery(params);
 
       // Add limit for simulation
       const limit = params.limit || 100;
-      query = query + `\nLIMIT ${limit}`;
+      assertValidLimit(limit);
+      const query = baseQuery + `\nLIMIT ${limit}`;
 
       console.log("Executing simulation query...");
       const [rows] = await this.bigQueryClient.query({
         query,
+        params: queryParams,
         useLegacySql: false,
         location: "US",
         jobTimeoutMs: 300000,
@@ -491,15 +533,18 @@ ORDER BY price_date
 
       // Step 2: Execute query
       console.log("\nStep 2: Fetching data from BigQuery...");
-      let query = this.getBigQueryQuery(startDate, endDate);
+      const { query: baseQuery, queryParams } = this.buildExecutableQuery(params);
 
       // Add limit if specified
+      let query = baseQuery;
       if (params.limit) {
+        assertValidLimit(params.limit);
         query = query + `\nLIMIT ${params.limit}`;
       }
 
       const [rows] = await this.bigQueryClient.query({
         query,
+        params: queryParams,
         useLegacySql: false,
         location: "US",
         jobTimeoutMs: 600000, // 10 minutes

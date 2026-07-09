@@ -5,6 +5,18 @@ import { userRepository } from '../../repositories/user-repository';
 const router = Router();
 
 /**
+ * Parse an optional daysBack query param. NaN falls back to the route's
+ * default (undefined); valid values are clamped to 1..3650 so they can't
+ * produce `INTERVAL NaN DAY` or unbounded scans.
+ */
+function parseDaysBack(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = parseInt(value as string, 10);
+  if (isNaN(parsed)) return undefined;
+  return Math.min(Math.max(parsed, 1), 3650);
+}
+
+/**
  * GET /api/positions/user/:userAddress
  *
  * Fetch user positions directly from BigQuery (ultra-fast, optimized for UI)
@@ -44,6 +56,12 @@ router.get('/user/:userAddress', async (req: Request, res: Response) => {
     const poolId = pool as string;
     const assetAddress = asset as string;
     const index = parseInt(assetIndex as string);
+    if (!Number.isInteger(index) || index < 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid assetIndex: must be a non-negative integer',
+      });
+    }
 
     console.log(`📊 Fetching positions for user ${userAddress.substring(0, 8)}...`);
 
@@ -55,7 +73,7 @@ router.get('/user/:userAddress', async (req: Request, res: Response) => {
       userAddress,
       startDate: startDate as string | undefined,
       endDate: endDate as string | undefined,
-      daysBack: daysBack ? parseInt(daysBack as string) : undefined,
+      daysBack: parseDaysBack(daysBack),
     });
 
     res.json({
@@ -123,7 +141,7 @@ router.get('/user/:userAddress/all-assets', async (req: Request, res: Response) 
             userAddress,
             startDate: startDate as string | undefined,
             endDate: endDate as string | undefined,
-            daysBack: daysBack ? parseInt(daysBack as string) : undefined,
+            daysBack: parseDaysBack(daysBack),
           });
         } catch (error) {
           console.error(`Failed to fetch asset ${assetAddress}:`, error);
@@ -189,7 +207,7 @@ router.get('/bulk', async (req: Request, res: Response) => {
       poolId,
       startDate: startDate as string | undefined,
       endDate: endDate as string | undefined,
-      daysBack: daysBack ? parseInt(daysBack as string) : undefined,
+      daysBack: parseDaysBack(daysBack),
     });
 
     res.json({
@@ -230,7 +248,7 @@ router.get('/cached/:userAddress/:assetAddress', async (req: Request, res: Respo
     }
 
     const poolId = pool as string;
-    const daysBack = days ? parseInt(days as string) : 30;
+    const daysBack = parseDaysBack(days) ?? 30;
 
     // Get from PostgreSQL cache
     const history = await userRepository.getUserBalanceHistory(

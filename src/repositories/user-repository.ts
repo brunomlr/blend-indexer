@@ -130,9 +130,15 @@ export class UserRepository {
     assetAddress: string,
     date?: string
   ): Promise<UserBalance | null> {
+    // Without a date, use the USER'S own latest snapshot for this asset -
+    // the global MAX(snapshot_date) would 404 any user who didn't change
+    // their position on the most recent change date in the whole table.
     const dateCondition = date
       ? 'AND p.snapshot_date = $3'
-      : 'AND p.snapshot_date = (SELECT MAX(snapshot_date) FROM user_positions)';
+      : `AND p.snapshot_date = (
+           SELECT MAX(snapshot_date) FROM user_positions
+           WHERE user_address = $1 AND asset_address = $2
+         )`;
 
     const params = date
       ? [userAddress, assetAddress, date]
@@ -161,11 +167,13 @@ export class UserRepository {
         ((p.supply_btokens + p.collateral_btokens) * r.b_rate - p.liabilities_dtokens * r.d_rate) AS net_balance
       FROM user_positions p
       JOIN pool_snapshots r
-        ON p.asset_address = r.asset_address
+        ON p.pool_id = r.pool_id
+        AND p.asset_address = r.asset_address
         AND p.snapshot_date = r.snapshot_date
       WHERE p.user_address = $1
         AND p.asset_address = $2
         ${dateCondition}
+      ORDER BY p.snapshot_date DESC, p.ledger_sequence DESC
       LIMIT 1
       `,
       params

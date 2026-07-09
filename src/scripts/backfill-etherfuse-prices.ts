@@ -1,8 +1,8 @@
 /**
- * Backfill historical TESOURO token prices from Etherfuse API
+ * Backfill historical Etherfuse bond token prices (TESOURO, USTRY)
  *
- * Fetches historical prices for the TESOURO bond token.
- * API returns tokenPrice (BRL) and usdExchangeRate (BRL/USD).
+ * Fetches historical prices for Etherfuse bond tokens.
+ * API returns tokenPrice (local currency) and usdExchangeRate (currency/USD).
  * USD price = tokenPrice / usdExchangeRate
  *
  * Run:
@@ -20,14 +20,16 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL?.includes("neon") ? { rejectUnauthorized: false } : undefined,
 });
 
-// Etherfuse bond address for TESOURO
-const ETHERFUSE_BOND_ID = "BRNTNaZeTJANz9PeuD8drNbBHwGgg7ZTjiQYrFgWQ48p";
-const ETHERFUSE_API_URL = `https://api.etherfuse.com/lookup/bonds/history/${ETHERFUSE_BOND_ID}`;
+// Etherfuse bond IDs by token symbol
+const ETHERFUSE_BONDS: Record<string, string> = {
+  TESOURO: "BRNTNaZeTJANz9PeuD8drNbBHwGgg7ZTjiQYrFgWQ48p",
+  USTRY: "USTRYnGgcHAhdWsanv8BG6vHGd4p7UGgoB9NRd8ei7j",
+};
 
 interface EtherfusePricePoint {
   date: string;            // ISO 8601 timestamp
-  tokenPrice: string;      // Price in BRL (string)
-  usdExchangeRate: string; // BRL per USD (string)
+  tokenPrice: string;      // Price in local currency (string)
+  usdExchangeRate: string; // Currency per USD (string)
   statusType: string;      // "Issuance" or "Daily"
 }
 
@@ -35,19 +37,20 @@ interface EtherfuseResponse {
   historyRange: EtherfusePricePoint[];
 }
 
-async function getTesouroTokenAddress(): Promise<string | null> {
+async function getTokenAddress(symbol: string): Promise<string | null> {
   const result = await pool.query(`
     SELECT asset_address
     FROM tokens
-    WHERE symbol = 'TESOURO'
-  `);
+    WHERE symbol = $1
+  `, [symbol]);
   return result.rows[0]?.asset_address || null;
 }
 
-async function fetchEtherfuseHistory(): Promise<EtherfusePricePoint[]> {
-  console.log(`  Fetching: ${ETHERFUSE_API_URL}`);
+async function fetchEtherfuseHistory(bondId: string): Promise<EtherfusePricePoint[]> {
+  const url = `https://api.etherfuse.com/lookup/bonds/history/${bondId}`;
+  console.log(`  Fetching: ${url}`);
 
-  const response = await fetch(ETHERFUSE_API_URL);
+  const response = await fetch(url);
 
   if (!response.ok) {
     const text = await response.text();
@@ -72,21 +75,22 @@ async function getExistingPriceDates(tokenAddress: string): Promise<Set<string>>
   return new Set(result.rows.map(r => r.price_date.split('T')[0]));
 }
 
-async function backfillTesouro(): Promise<number> {
-  console.log("\n  Fetching TESOURO prices from Etherfuse...");
+async function backfillBond(symbol: string, bondId: string): Promise<number> {
+  console.log(`\n  Fetching ${symbol} prices from Etherfuse...`);
 
-  const tokenAddress = await getTesouroTokenAddress();
+  const tokenAddress = await getTokenAddress(symbol);
   if (!tokenAddress) {
-    throw new Error("TESOURO token not found in tokens table");
+    console.log(`  ${symbol} token not found in tokens table, skipping`);
+    return 0;
   }
 
-  console.log(`  TESOURO address: ${tokenAddress}`);
+  console.log(`  ${symbol} address: ${tokenAddress}`);
 
   // Get existing dates to avoid duplicates
   const existingDates = await getExistingPriceDates(tokenAddress);
   console.log(`  Existing price points: ${existingDates.size}`);
 
-  const prices = await fetchEtherfuseHistory();
+  const prices = await fetchEtherfuseHistory(bondId);
   console.log(`  Etherfuse returned ${prices.length} price points`);
 
   // Group by date and take the last entry for each day
@@ -105,7 +109,7 @@ async function backfillTesouro(): Promise<number> {
     const tokenPrice = parseFloat(point.tokenPrice);
     const usdExchangeRate = parseFloat(point.usdExchangeRate);
 
-    // Calculate USD price: tokenPrice (BRL) / usdExchangeRate (BRL/USD) = USD
+    // Calculate USD price: tokenPrice (local currency) / usdExchangeRate (currency/USD) = USD
     const usdPrice = tokenPrice / usdExchangeRate;
 
     // Skip if we already have this date
@@ -120,7 +124,7 @@ async function backfillTesouro(): Promise<number> {
       DO UPDATE SET usd_price = EXCLUDED.usd_price, source = 'etherfuse'
     `, [tokenAddress, priceDate, usdPrice]);
 
-    console.log(`    ${priceDate}: $${usdPrice.toFixed(6)} (BRL ${tokenPrice.toFixed(4)} / ${usdExchangeRate.toFixed(4)})`);
+    console.log(`    ${priceDate}: $${usdPrice.toFixed(6)} (${tokenPrice.toFixed(4)} / ${usdExchangeRate.toFixed(4)})`);
     inserted++;
   }
 
@@ -130,7 +134,7 @@ async function backfillTesouro(): Promise<number> {
 
 async function main() {
   console.log("═══════════════════════════════════════════════════════════");
-  console.log("  Etherfuse Historical Price Backfill (TESOURO)");
+  console.log("  Etherfuse Historical Price Backfill (TESOURO, USTRY)");
   console.log("═══════════════════════════════════════════════════════════");
 
   try {
@@ -138,13 +142,16 @@ async function main() {
     await pool.query("SELECT 1");
     console.log("  Database connected\n");
 
-    const inserted = await backfillTesouro();
+    let totalInserted = 0;
+    for (const [symbol, bondId] of Object.entries(ETHERFUSE_BONDS)) {
+      totalInserted += await backfillBond(symbol, bondId);
+    }
 
     // Summary
     console.log("\n═══════════════════════════════════════════════════════════");
     console.log("  Summary");
     console.log("═══════════════════════════════════════════════════════════");
-    console.log(`  Total price points inserted: ${inserted}`);
+    console.log(`  Total price points inserted: ${totalInserted}`);
     console.log("═══════════════════════════════════════════════════════════\n");
 
   } catch (error) {

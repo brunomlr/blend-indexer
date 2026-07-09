@@ -13,6 +13,7 @@ import path from 'path';
 import { backstopPoolSnapshotRepository } from '../repositories/backstop-pool-snapshot-repository';
 import { BackstopPoolSnapshotRow } from '../types';
 import { confirm } from '../utils/prompt';
+import { assertValidDate, assertValidLimit, assertValidStellarAddress } from '../utils/bigquery-validation';
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
@@ -68,28 +69,47 @@ export class BackstopQ4wBackfillService {
   }
 
   /**
-   * Build the BigQuery query for fetching backstop pool balance data
+   * Validate all query inputs; throws on anything malformed
    */
-  getBigQueryQuery(params: BackstopQ4wBackfillParams): string {
-    const startDate = params.startDate || DEFAULT_START_DATE;
-    const endDate = params.endDate;
-    const poolAddress = params.poolAddress;
-    const limit = params.limit;
+  private validateParams(params: BackstopQ4wBackfillParams): void {
+    if (params.startDate !== undefined) {
+      assertValidDate('startDate', params.startDate);
+    }
+    if (params.endDate !== undefined) {
+      assertValidDate('endDate', params.endDate);
+    }
+    if (params.poolAddress !== undefined) {
+      assertValidStellarAddress('poolAddress', params.poolAddress);
+    }
+    if (params.limit !== undefined) {
+      assertValidLimit(params.limit);
+    }
+  }
 
+  /**
+   * Render the SQL with the given expressions (inline literals for display,
+   * @named parameters for execution)
+   */
+  private renderQuery(opts: {
+    startDateExpr: string;
+    endDateExpr?: string;
+    poolAddressExpr?: string;
+    limit?: number;
+  }): string {
     // Build date filter
-    let dateFilter = `AND closed_at >= '${startDate}'`;
-    if (endDate) {
-      dateFilter += `\n    AND closed_at < '${endDate}'`;
+    let dateFilter = `AND closed_at >= ${opts.startDateExpr}`;
+    if (opts.endDateExpr) {
+      dateFilter += `\n    AND closed_at < ${opts.endDateExpr}`;
     }
 
     // Build pool filter
     let poolFilter = '';
-    if (poolAddress) {
-      poolFilter = `\n    AND JSON_EXTRACT_SCALAR(key_decoded, '$.vec[1].address') = '${poolAddress}'`;
+    if (opts.poolAddressExpr) {
+      poolFilter = `\n    AND JSON_EXTRACT_SCALAR(key_decoded, '$.vec[1].address') = ${opts.poolAddressExpr}`;
     }
 
-    // Build limit clause
-    const limitClause = limit ? `\nLIMIT ${limit}` : '';
+    // Build limit clause (limit is validated as an integer before this point)
+    const limitClause = opts.limit ? `\nLIMIT ${opts.limit}` : '';
 
     return `
 WITH daily_snapshots AS (
@@ -132,10 +152,54 @@ ORDER BY pool_address, snapshot_date${limitClause}
   }
 
   /**
+   * Get the BigQuery query for fetching backstop pool balance data
+   * (display/copy-paste version with inline literals; inputs validated first)
+   */
+  getBigQueryQuery(params: BackstopQ4wBackfillParams): string {
+    this.validateParams(params);
+    const startDate = params.startDate || DEFAULT_START_DATE;
+
+    return this.renderQuery({
+      startDateExpr: `'${startDate}'`,
+      endDateExpr: params.endDate ? `'${params.endDate}'` : undefined,
+      poolAddressExpr: params.poolAddress ? `'${params.poolAddress}'` : undefined,
+      limit: params.limit,
+    });
+  }
+
+  /**
+   * Build the executable query using BigQuery named parameters
+   */
+  private buildExecutableQuery(params: BackstopQ4wBackfillParams): {
+    query: string;
+    queryParams: Record<string, string>;
+  } {
+    this.validateParams(params);
+    const startDate = params.startDate || DEFAULT_START_DATE;
+
+    const queryParams: Record<string, string> = { startDate };
+    if (params.endDate) {
+      queryParams.endDate = params.endDate;
+    }
+    if (params.poolAddress) {
+      queryParams.poolAddress = params.poolAddress;
+    }
+
+    const query = this.renderQuery({
+      startDateExpr: 'TIMESTAMP(@startDate)',
+      endDateExpr: params.endDate ? 'TIMESTAMP(@endDate)' : undefined,
+      poolAddressExpr: params.poolAddress ? '@poolAddress' : undefined,
+      limit: params.limit,
+    });
+
+    return { query, queryParams };
+  }
+
+  /**
    * Get cost estimate for a BigQuery query
    */
   async getCostEstimate(params: BackstopQ4wBackfillParams): Promise<CostEstimate> {
-    const query = this.getBigQueryQuery(params);
+    const { query, queryParams } = this.buildExecutableQuery(params);
 
     console.log('📊 Getting cost estimate for backstop Q4W backfill...');
     console.log(`   Date range: ${params.startDate || DEFAULT_START_DATE} to ${params.endDate || 'now'}`);
@@ -145,6 +209,7 @@ ORDER BY pool_address, snapshot_date${limitClause}
 
     const [job] = await this.client.createQueryJob({
       query,
+      params: queryParams,
       useLegacySql: false,
       dryRun: true,
       location: 'US',
@@ -160,7 +225,8 @@ ORDER BY pool_address, snapshot_date${limitClause}
       bytes: estimatedBytes,
       gb: estimatedGB,
       cost: estimatedCost,
-      query,
+      // Return the copy-paste version with inline literals for display
+      query: this.getBigQueryQuery(params),
     };
   }
 
@@ -186,11 +252,12 @@ ORDER BY pool_address, snapshot_date${limitClause}
         limit: params.limit || 100,
       };
 
-      const query = this.getBigQueryQuery(simulationParams);
+      const { query, queryParams } = this.buildExecutableQuery(simulationParams);
 
       console.log('Executing simulation query...');
       const [rows] = await this.client.query({
         query,
+        params: queryParams,
         useLegacySql: false,
         location: 'US',
         jobTimeoutMs: 300000,
@@ -210,9 +277,18 @@ ORDER BY pool_address, snapshot_date${limitClause}
         }
       }
 
+      // Map BigQuery DATE/TIMESTAMP objects ({value: '...'}) to plain strings
+      // - the frontend renders these fields directly and React throws on
+      // object children
+      const mappedRows = (rows as any[]).map((row) => ({
+        ...row,
+        snapshot_date: row.snapshot_date?.value ?? row.snapshot_date,
+        snapshot_timestamp: row.snapshot_timestamp?.value ?? row.snapshot_timestamp,
+      }));
+
       return {
         success: true,
-        rows: rows as any[],
+        rows: mappedRows,
         estimated_cost: estimate.cost,
         query: estimate.query,
       };
@@ -279,10 +355,11 @@ ORDER BY pool_address, snapshot_date${limitClause}
 
       // Step 2: Execute query
       console.log('\nStep 2: Fetching data from BigQuery...');
-      const query = this.getBigQueryQuery(params);
+      const { query, queryParams } = this.buildExecutableQuery(params);
 
       const [rows] = await this.client.query({
         query,
+        params: queryParams,
         useLegacySql: false,
         location: 'US',
         jobTimeoutMs: 600000,

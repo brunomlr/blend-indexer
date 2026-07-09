@@ -16,7 +16,13 @@ import liveRoutes from './routes/live';
 const app = express();
 
 // Middleware
-app.use(express.json());
+// Keep the raw request bytes so webhook HMAC signatures can be verified
+// against exactly what the sender signed (re-serializing req.body is lossy)
+app.use(express.json({
+  verify: (req, _res, buf) => {
+    (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+  },
+}));
 
 // CORS (if needed for frontend)
 app.use((req, res, next) => {
