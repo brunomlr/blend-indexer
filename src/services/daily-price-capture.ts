@@ -9,7 +9,7 @@
  */
 
 import { Pool as PgPool } from "pg";
-import { Backstop, FixedMath, Pool, PoolMetadata, PoolV1, PoolV2, Version } from "@blend-capital/blend-sdk";
+import { Backstop, FixedMath, Pool, PoolMetadata, PoolV1, PoolV2, Version, getOracleDecimals, getOraclePrice } from "@blend-capital/blend-sdk";
 import { getBlendNetwork } from "../lib/blend/network";
 import { TRACKED_POOLS } from "../lib/blend/pools";
 
@@ -126,10 +126,11 @@ export class DailyPriceCaptureService {
           ? await PoolV2.loadWithMetadata(network, trackedPool.id, metadata)
           : await PoolV1.loadWithMetadata(network, trackedPool.id, metadata);
 
-        // Load the oracle to get prices
-        const oracle = await pool.loadOracle();
+        // Load oracle decimals (needed to convert fixed-point prices to floats).
+        // If decimals cannot be fetched the pool is entirely skipped.
+        const { decimals: oracleDecimals } = await getOracleDecimals(network, metadata.oracle);
 
-        for (const [assetId, reserve] of pool.reserves) {
+        for (const [assetId] of pool.reserves) {
           // Skip if already captured (from another pool or pegged)
           if (seenTokens.has(assetId)) {
             continue;
@@ -142,17 +143,28 @@ export class DailyPriceCaptureService {
             continue;
           }
 
-          // Get oracle price
-          const oraclePrice = oracle.getPriceFloat(assetId);
-          if (oraclePrice && oraclePrice > 0) {
-            await this.saveDailyPrice(assetId, today, oraclePrice, "sdk_oracle");
+          // Fetch the oracle price per-asset so that a single unavailable
+          // price does not prevent capturing prices for all other assets in
+          // the same pool (the previous batch approach used Promise.all which
+          // would reject the entire pool on the first oracle error).
+          try {
+            const priceData = await getOraclePrice(network, metadata.oracle, assetId);
+            const oraclePrice = FixedMath.toFloat(priceData.price, oracleDecimals);
+            if (oraclePrice > 0) {
+              await this.saveDailyPrice(assetId, today, oraclePrice, "sdk_oracle");
 
-            // Get symbol for logging
-            const tokenInfo = await this.getTokenSymbol(assetId);
-            const symbol = tokenInfo || assetId.slice(0, 8);
-            captured.push(`${symbol}: $${oraclePrice.toFixed(6)}`);
-            pricesInserted++;
-            console.log(`[price-capture] ${symbol}: $${oraclePrice.toFixed(6)}`);
+              // Get symbol for logging
+              const tokenInfo = await this.getTokenSymbol(assetId);
+              const symbol = tokenInfo || assetId.slice(0, 8);
+              captured.push(`${symbol}: $${oraclePrice.toFixed(6)}`);
+              pricesInserted++;
+              console.log(`[price-capture] ${symbol}: $${oraclePrice.toFixed(6)}`);
+            }
+          } catch (oracleError: any) {
+            // Oracle price unavailable for this individual asset.
+            // Log as a warning rather than a hard error so that other assets
+            // in the pool (and the overall job) are not blocked.
+            console.warn(`[price-capture] WARN ${trackedPool.name}: oracle price unavailable for ${assetId.slice(0, 8)}: ${oracleError.message}`);
           }
         }
       } catch (error: any) {
