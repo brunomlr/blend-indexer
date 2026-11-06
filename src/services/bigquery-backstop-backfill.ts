@@ -30,6 +30,7 @@ const ACTION_TYPES = [
 ];
 
 export interface BackstopBackfillParams {
+  backstopContract?: string;  // Optional: backstop to read (default V2; V2.1 = CCS4AZ5O...)
   startLedger?: number;
   endLedger?: number;
   startDate?: string;
@@ -89,7 +90,7 @@ export class BigQueryBackstopBackfillService {
     // Build WHERE filters
     const filters: string[] = [
       `in_successful_contract_call = TRUE`,
-      `contract_id = '${BACKSTOP_CONTRACT}'`,
+      `contract_id = '${this.escapeSqlString(params.backstopContract ?? BACKSTOP_CONTRACT)}'`,
       `JSON_VALUE(topics_decoded, '$[0].symbol') IN (${actionsInClause})`,
       `operation_id IS NOT NULL`,  // Filter out malformed records with NULL operation_id
     ];

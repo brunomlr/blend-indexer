@@ -10,7 +10,7 @@ import { BigQuery } from "@google-cloud/bigquery";
 import fs from "fs";
 import dotenv from "dotenv";
 import path from "path";
-import { assertValidDate, assertValidLimit } from "../utils/bigquery-validation";
+import { assertValidDate, assertValidLimit, assertValidStellarAddress } from "../utils/bigquery-validation";
 
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
@@ -80,9 +80,13 @@ export interface BigQueryBackfillResult {
 export class LpPriceBackfillService {
   private pool: Pool;
   private bigQueryClient: BigQuery;
+  /** Comet LP contract to price (default Comet V1; V2.1 backstop uses Comet V1.1) */
+  private lpTokenAddress: string;
 
-  constructor(pool: Pool) {
+  constructor(pool: Pool, lpTokenAddress: string = LP_TOKEN_ADDRESS) {
     this.pool = pool;
+    assertValidStellarAddress("lpTokenAddress", lpTokenAddress);
+    this.lpTokenAddress = lpTokenAddress;
 
     // Initialize BigQuery client
     const options: { projectId?: string; keyFilename?: string } = {};
@@ -110,7 +114,7 @@ WITH total_shares AS (
     DATE(closed_at) as price_date,
     CAST(JSON_EXTRACT_SCALAR(val_decoded, '$.i128') AS NUMERIC) as total_lp_tokens
   FROM \`crypto-stellar.crypto_stellar.contract_data\`
-  WHERE contract_id = 'CAS3FL6TLZKDGGSISDBWGGPXT3NRR4DYTZD7YOD3HMYO6LTJUVGRVEAM'
+  WHERE contract_id = '${this.lpTokenAddress}'
     AND JSON_EXTRACT_SCALAR(key_decoded, '$.vec[0].symbol') = 'TotalShares'
     AND closed_at >= ${startDateExpr}
     ${endDateClause}
@@ -120,7 +124,7 @@ record_data AS (
     ledger_sequence,
     CAST(JSON_EXTRACT_SCALAR(val_decoded, '$.map[0].val.map[0].val.i128') AS NUMERIC) as usdc_balance
   FROM \`crypto-stellar.crypto_stellar.contract_data\`
-  WHERE contract_id = 'CAS3FL6TLZKDGGSISDBWGGPXT3NRR4DYTZD7YOD3HMYO6LTJUVGRVEAM'
+  WHERE contract_id = '${this.lpTokenAddress}'
     AND JSON_EXTRACT_SCALAR(key_decoded, '$.vec[0].symbol') = 'AllRecordData'
     AND closed_at >= ${startDateExpr}
     ${endDateClause}
@@ -250,7 +254,7 @@ ORDER BY price_date
       FROM daily_token_prices
       WHERE token_address = $1
     `,
-      [LP_TOKEN_ADDRESS]
+      [this.lpTokenAddress]
     );
 
     return new Set(result.rows.map((r) => r.price_date.split("T")[0]));
@@ -269,7 +273,7 @@ ORDER BY price_date
       FROM daily_token_prices
       WHERE token_address = $1
     `,
-      [LP_TOKEN_ADDRESS]
+      [this.lpTokenAddress]
     );
 
     const row = result.rows[0];
@@ -394,7 +398,7 @@ ORDER BY price_date
           ON CONFLICT (token_address, price_date)
           DO UPDATE SET usd_price = EXCLUDED.usd_price, source = 'hubble'
         `,
-          [LP_TOKEN_ADDRESS, row.priceDate, row.price]
+          [this.lpTokenAddress, row.priceDate, row.price]
         );
         inserted++;
       }
@@ -601,7 +605,7 @@ ORDER BY price_date
           ON CONFLICT (token_address, price_date)
           DO UPDATE SET usd_price = EXCLUDED.usd_price, source = 'hubble'
         `,
-          [LP_TOKEN_ADDRESS, priceDate, price]
+          [this.lpTokenAddress, priceDate, price]
         );
 
         if (isUpdate) {

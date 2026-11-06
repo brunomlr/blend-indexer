@@ -35,6 +35,8 @@ const ACTION_TYPES = [
 ];
 
 export interface ActionsBackfillParams {
+  /** Optional subset of tracked pools (default: all tracked pools) */
+  poolIds?: string[];
   startLedger?: number;
   endLedger?: number;
   startDate?: string;
@@ -89,7 +91,12 @@ export class BigQueryActionsBackfillService {
       limit,
     } = params;
 
-    const poolsInClause = BLEND_POOLS.map(p => `'${this.escapeSqlString(p)}'`).join(', ');
+    const pools = params.poolIds && params.poolIds.length > 0 ? params.poolIds : BLEND_POOLS;
+    const unknown = pools.filter(p => !BLEND_POOLS.includes(p));
+    if (unknown.length > 0) {
+      throw new Error(`Not tracked pools: ${unknown.join(', ')}`);
+    }
+    const poolsInClause = pools.map(p => `'${this.escapeSqlString(p)}'`).join(', ');
     const actionsInClause = ACTION_TYPES.map(a => `'${a}'`).join(', ');
 
     // Build WHERE filters

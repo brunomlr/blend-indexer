@@ -30,6 +30,7 @@ export interface BackstopQ4wBackfillParams {
   startDate?: string;
   endDate?: string;
   poolAddress?: string;  // Optional: filter to specific pool
+  backstopContract?: string;  // Optional: backstop to read (default V2; V2.1 = CCS4AZ5O...)
   limit?: number;
   skipConfirmation?: boolean;
 }
@@ -81,6 +82,9 @@ export class BackstopQ4wBackfillService {
     if (params.poolAddress !== undefined) {
       assertValidStellarAddress('poolAddress', params.poolAddress);
     }
+    if (params.backstopContract !== undefined) {
+      assertValidStellarAddress('backstopContract', params.backstopContract);
+    }
     if (params.limit !== undefined) {
       assertValidLimit(params.limit);
     }
@@ -91,6 +95,7 @@ export class BackstopQ4wBackfillService {
    * @named parameters for execution)
    */
   private renderQuery(opts: {
+    backstopContract: string;
     startDateExpr: string;
     endDateExpr?: string;
     poolAddressExpr?: string;
@@ -129,7 +134,7 @@ WITH daily_snapshots AS (
       ORDER BY ledger_sequence DESC
     ) as rn
   FROM \`crypto-stellar.crypto_stellar.contract_data\`
-  WHERE contract_id = '${BACKSTOP_CONTRACT}'
+  WHERE contract_id = '${opts.backstopContract}'
     AND JSON_EXTRACT_SCALAR(key_decoded, '$.vec[0].symbol') = 'PoolBalance'
     ${dateFilter}${poolFilter}
 )
@@ -160,6 +165,7 @@ ORDER BY pool_address, snapshot_date${limitClause}
     const startDate = params.startDate || DEFAULT_START_DATE;
 
     return this.renderQuery({
+      backstopContract: params.backstopContract ?? BACKSTOP_CONTRACT,
       startDateExpr: `'${startDate}'`,
       endDateExpr: params.endDate ? `'${params.endDate}'` : undefined,
       poolAddressExpr: params.poolAddress ? `'${params.poolAddress}'` : undefined,
@@ -186,6 +192,7 @@ ORDER BY pool_address, snapshot_date${limitClause}
     }
 
     const query = this.renderQuery({
+      backstopContract: params.backstopContract ?? BACKSTOP_CONTRACT,
       startDateExpr: 'TIMESTAMP(@startDate)',
       endDateExpr: params.endDate ? 'TIMESTAMP(@endDate)' : undefined,
       poolAddressExpr: params.poolAddress ? '@poolAddress' : undefined,

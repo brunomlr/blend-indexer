@@ -1,9 +1,5 @@
 name: blend-events
-version: 17
 resource_size: m
-from_snapshot:
-  id: snapshot-cmj0pw001n93301tlaue331af
-  created_at: 1765413986600
 apiVersion: 3
 sources:
   stellar.events:
@@ -15,11 +11,11 @@ transforms:
   backstop_events:
     type: sql
     primary_key: id
-    sql: |-
+    sql: >-
       SELECT * FROM stellar.events
             WHERE type = 'contract'
               AND in_successful_contract_call = true
-              AND contract_id = 'CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7'
+              AND contract_id IN ('CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7', 'CCS4AZ5ORM6VLLPJTJUFRNXWBMHOO3L5WHHRPL2ZMILE35ZDMQFHOQMJ')
   blend_events:
     type: sql
     primary_key: id
@@ -32,12 +28,13 @@ transforms:
           'CCCCIQSDILITHMM7PBSLVDT5MISSY7R26MNZXCX4H7J5JQ5FPIYOGYFS',
           'CAE7QVOMBLZ53CDRGK3UNRRHG5EZ5NQA7HHTFASEMYBWHG6MDFZTYHXC',
           'CBYOBT7ZCCLQCBUYYIABZLSEGDPEUWXCUXQTZYOG3YBDR7U357D5ZIRF',
-          'CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI'
+          'CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI',
+          'CBAKAZUEJBAFA2DCGBRS2WKJT3FNIMJBHTFL76AY7XMAVEINQNNIQWAO'
         )
   parsed_backstop_events:
     type: sql
     primary_key: id
-    sql: |-
+    sql: >-
       SELECT
               -- Construct ID using content hash of PARSED values: {ledger}-{hash16}
               -- Hash uses the same parsed values that get stored in the database
@@ -196,7 +193,7 @@ transforms:
   parsed_events:
     type: sql
     primary_key: id
-    sql: |-
+    sql: >-
       SELECT
               -- Construct ID using content hash of PARSED values: {ledger}-{hash16}
               -- Hash uses the same parsed values that get stored in the database
