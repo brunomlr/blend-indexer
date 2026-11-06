@@ -1,9 +1,13 @@
 import { Version } from "@blend-capital/blend-sdk";
+import { BACKSTOP_V2, BACKSTOP_V2_1 } from "./backstops";
 
 export interface TrackedPool {
   id: string;
   name: string;
+  /** Contract interface. V2.1 pools run the V2 contracts (Version.V2). */
   version: Version;
+  /** Backstop the pool sits behind (from pool metadata; fixed per pool) */
+  backstopId: string;
 }
 
 /**
@@ -22,26 +26,37 @@ export const TRACKED_POOLS: TrackedPool[] = [
     id: "CCCCIQSDILITHMM7PBSLVDT5MISSY7R26MNZXCX4H7J5JQ5FPIYOGYFS",
     name: "YieldBlox",
     version: Version.V2,
+    backstopId: BACKSTOP_V2,
   },
   {
     id: "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD",
     name: "Blend Pool",
     version: Version.V2,
+    backstopId: BACKSTOP_V2,
   },
   {
     id: "CAE7QVOMBLZ53CDRGK3UNRRHG5EZ5NQA7HHTFASEMYBWHG6MDFZTYHXC",
     name: "Orbit",
     version: Version.V2,
+    backstopId: BACKSTOP_V2,
   },
   {
     id: "CBYOBT7ZCCLQCBUYYIABZLSEGDPEUWXCUXQTZYOG3YBDR7U357D5ZIRF",
     name: "Forex",
     version: Version.V2,
+    backstopId: BACKSTOP_V2,
   },
   {
     id: "CDMAVJPFXPADND3YRL4BSM3AKZWCTFMX27GLLXCML3PD62HEQS5FPVAI",
     name: "Etherfuse",
     version: Version.V2,
+    backstopId: BACKSTOP_V2,
+  },
+  {
+    id: "CBAKAZUEJBAFA2DCGBRS2WKJT3FNIMJBHTFL76AY7XMAVEINQNNIQWAO",
+    name: "Fixed v2.1",
+    version: Version.V2,
+    backstopId: BACKSTOP_V2_1,
   },
 ];
 

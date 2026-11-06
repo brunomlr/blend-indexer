@@ -2,7 +2,8 @@
  * Daily Price Capture Service
  *
  * Captures current token prices from:
- * - SDK Backstop: For LP token (BLNDUSDCLP) and BLND token (derived from 80/20 pool)
+ * - SDK Backstops: For each LP token (Comet V1 and V1.1 BLNDUSDCLP) and BLND
+ *   (derived from the 80/20 comet with the deepest USDC side)
  * - SDK Oracle: For reserve tokens (XLM, USDC, AQUA, etc.)
  * - CoinGecko Exchange Rates: For pegged tokens (stablecoins)
  * - Etherfuse: For TESOURO bond token
@@ -12,9 +13,16 @@ import { Pool as PgPool } from "pg";
 import { Backstop, FixedMath, Pool, PoolMetadata, PoolV1, PoolV2, Version, getOracleDecimals, getOraclePrice } from "@blend-capital/blend-sdk";
 import { getBlendNetwork } from "../lib/blend/network";
 import { TRACKED_POOLS } from "../lib/blend/pools";
+import { BACKSTOP_V2, BACKSTOP_V2_1 } from "../lib/blend/backstops";
 
-const BACKSTOP_ID = "CAO3AGAMZVRMHITL36EJ2VZQWKYRPWMQAPDQD5YEOF3GIF7T44U4JAL3";
-const LP_TOKEN_ADDRESS = "CAS3FL6TLZKDGGSISDBWGGPXT3NRR4DYTZD7YOD3HMYO6LTJUVGRVEAM";
+/**
+ * One backstop per distinct LP token. The Comet V1 LP (V1/V2 backstops) is
+ * drained, so it is kept only for price continuity of existing V2 positions.
+ */
+const LP_PRICE_BACKSTOPS: Array<{ backstopId: string; label: string }> = [
+  { backstopId: BACKSTOP_V2, label: "BLNDUSDCLP (Comet V1)" },
+  { backstopId: BACKSTOP_V2_1, label: "BLNDUSDCLP (Comet V1.1)" },
+];
 const BLND_TOKEN_ADDRESS = "CD25MNVTZDL4Y3XBCPCJXGXATV5WUHHOWMYFF4YBEGU5FCPGMYTVG5JY";
 const COINGECKO_EXCHANGE_RATES_URL = "https://api.coingecko.com/api/v3/exchange_rates";
 
@@ -56,31 +64,46 @@ export class DailyPriceCaptureService {
 
     console.log(`\n[price-capture] Starting daily price capture for ${today}`);
 
-    // 1. Capture LP token price and BLND price from Backstop
-    try {
-      console.log("[price-capture] Loading Backstop for LP and BLND prices...");
-      const backstop = await Backstop.load(network, BACKSTOP_ID);
-      const bt = backstop.backstopToken;
+    // 1. Capture each LP token price, and the BLND price from the deepest comet
+    let deepest: { usdc: number; blndPrice: number; label: string } | null = null;
+    for (const { backstopId, label } of LP_PRICE_BACKSTOPS) {
+      try {
+        console.log(`[price-capture] Loading backstop ${backstopId.slice(0, 8)}... for ${label}`);
+        const backstop = await Backstop.load(network, backstopId);
+        const bt = backstop.backstopToken;
 
-      // LP token price
-      const lpPrice = bt.lpTokenPrice;
-      await this.saveDailyPrice(LP_TOKEN_ADDRESS, today, lpPrice, "sdk_backstop");
-      captured.push(`BLNDUSDCLP: $${lpPrice.toFixed(6)}`);
-      pricesInserted++;
-      console.log(`[price-capture] LP token: $${lpPrice.toFixed(6)}`);
+        // LP token price (keyed by the comet contract = LP token address)
+        const lpPrice = bt.lpTokenPrice;
+        await this.saveDailyPrice(bt.id, today, lpPrice, "sdk_backstop");
+        captured.push(`${label}: $${lpPrice.toPrecision(6)}`);
+        pricesInserted++;
+        console.log(`[price-capture] ${label}: $${lpPrice.toPrecision(6)}`);
 
-      // BLND price derived from 80/20 pool
-      const usdcAmount = FixedMath.toFloat(bt.usdc, 7);
-      const blndAmount = FixedMath.toFloat(bt.blnd, 7);
-      const blndPrice = (usdcAmount / 0.2) / (blndAmount / 0.8);
-      await this.saveDailyPrice(BLND_TOKEN_ADDRESS, today, blndPrice, "sdk_backstop");
-      captured.push(`BLND: $${blndPrice.toFixed(6)}`);
+        // BLND price implied by this 80/20 comet
+        const usdcAmount = FixedMath.toFloat(bt.usdc, 7);
+        const blndAmount = FixedMath.toFloat(bt.blnd, 7);
+        if (blndAmount > 0 && usdcAmount > 0) {
+          const blndPrice = (usdcAmount / 0.2) / (blndAmount / 0.8);
+          if (!deepest || usdcAmount > deepest.usdc) {
+            deepest = { usdc: usdcAmount, blndPrice, label };
+          }
+        }
+      } catch (error: any) {
+        const msg = `Backstop ${label}: ${error.message}`;
+        errors.push(msg);
+        console.error(`[price-capture] ERROR ${msg}`);
+      }
+    }
+
+    // BLND from the comet with the most USDC: a drained comet's spot price is
+    // trivially movable.
+    if (deepest) {
+      await this.saveDailyPrice(BLND_TOKEN_ADDRESS, today, deepest.blndPrice, "sdk_backstop");
+      captured.push(`BLND: $${deepest.blndPrice.toFixed(6)} (from ${deepest.label})`);
       pricesInserted++;
-      console.log(`[price-capture] BLND: $${blndPrice.toFixed(6)}`);
-    } catch (error: any) {
-      const msg = `Backstop: ${error.message}`;
-      errors.push(msg);
-      console.error(`[price-capture] ERROR ${msg}`);
+      console.log(`[price-capture] BLND: $${deepest.blndPrice.toFixed(6)} (from ${deepest.label}, $${deepest.usdc.toFixed(0)} USDC)`);
+    } else {
+      errors.push("BLND: no backstop comet available to derive a price");
     }
 
     // 2. Get pegged tokens from database and fetch exchange rates

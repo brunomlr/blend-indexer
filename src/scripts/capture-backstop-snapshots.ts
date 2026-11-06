@@ -21,8 +21,6 @@ import { BackstopPoolSnapshotRow } from "../types";
 
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
-const BACKSTOP_ID = "CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7";
-
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL?.includes("neon") ? { rejectUnauthorized: false } : undefined,
@@ -45,7 +43,6 @@ async function captureBackstopSnapshots(): Promise<CaptureResult> {
 
   console.log(`\n[backstop-snapshot] Starting capture for ${today}`);
   console.log(`[backstop-snapshot] Network: ${network.passphrase}`);
-  console.log(`[backstop-snapshot] Backstop: ${BACKSTOP_ID}`);
 
   // Get current ledger sequence from RPC
   const rpcServer = new rpc.Server(network.rpc);
@@ -63,7 +60,8 @@ async function captureBackstopSnapshots(): Promise<CaptureResult> {
       console.log(`[backstop-snapshot] Loading ${trackedPool.name}...`);
 
       // Load backstop pool data
-      const backstopPool = await BackstopPoolV2.load(network, BACKSTOP_ID, trackedPool.id);
+      // Each pool sits behind its own backstop (V2 or V2.1)
+      const backstopPool = await BackstopPoolV2.load(network, trackedPool.backstopId, trackedPool.id);
       const { shares, tokens, q4w } = backstopPool.poolBalance;
 
       // Calculate Q4W percentage: (q4w / shares) * 100

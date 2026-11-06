@@ -38,10 +38,15 @@ import { bigQueryClient } from "../services/bigquery-client";
 import { poolRepository } from "../repositories/pool-repository";
 import { confirm } from "../utils/prompt";
 import { discoverAllPoolAssets } from "../lib/blend/discovery";
+import {
+  BACKSTOP_LP_TOKEN,
+  areEmissionsEnabled,
+  isEmissionActive,
+} from "../lib/blend/backstops";
 
 const BLND_TOKEN = "CD25MNVTZDL4Y3XBCPCJXGXATV5WUHHOWMYFF4YBEGU5FCPGMYTVG5JY";
+// Historical backfill paths cover the V2 backstop (Comet V1 LP) only
 const LP_TOKEN = "CAS3FL6TLZKDGGSISDBWGGPXT3NRR4DYTZD7YOD3HMYO6LTJUVGRVEAM";
-const BACKSTOP_ID = "CAQQR5SWBXKIGZKPBZDH3KM5GQ5GUTPKB7JAFCINLZBC5WXPJKRG3IM7";
 const SECONDS_PER_YEAR = 31_536_000;
 const EPS_DECIMALS = 14;
 const V2_LAUNCH_DATE = "2025-04-14";
@@ -506,14 +511,13 @@ async function captureTodayEmissionApy(): Promise<void> {
   }
 
   const blndPrice = prices.get(BLND_TOKEN);
-  const lpPrice = prices.get(LP_TOKEN);
 
   if (!blndPrice) {
     console.log("Warning: BLND price not found for today. Run capture-daily-prices.ts first.");
   }
-  if (!lpPrice) {
-    console.log("Warning: LP token price not found for today.");
-  }
+
+  // Expired emission configs keep their eps on-chain but no longer pay out
+  const nowSeconds = Math.floor(Date.now() / 1000);
 
   let totalInserted = 0;
   let snapshotsInserted = 0;
@@ -530,12 +534,25 @@ async function captureTodayEmissionApy(): Promise<void> {
       const metadata = await PoolMetadata.load(network, trackedPool.id);
       const pool: Pool = await PoolV2.loadWithMetadata(network, trackedPool.id, metadata);
 
+      // Each pool's backstop has its own LP token (V2: Comet V1, V2.1: Comet V1.1)
+      const backstopId = trackedPool.backstopId;
+      const lpPrice = prices.get(BACKSTOP_LP_TOKEN[backstopId]);
+      if (!lpPrice) {
+        console.log(`  Warning: LP token price missing or zero for today (backstop ${backstopId.slice(0, 8)}...)`);
+      }
+
+      // Unfunded emissions (V2.1 until the emitter migrates) are not recorded
+      const emissionsEnabled = areEmissionsEnabled(backstopId);
+      if (!emissionsEnabled) {
+        console.log("  Emissions disabled for this backstop: skipping emission APY");
+      }
+
       // Load backstop data
-      const backstopPool = await BackstopPoolV2.load(network, BACKSTOP_ID, trackedPool.id);
+      const backstopPool = await BackstopPoolV2.load(network, backstopId, trackedPool.id);
 
       // --- BACKSTOP EMISSION APY ---
       const backstopEmissions = backstopPool.emissions;
-      if (backstopEmissions && backstopEmissions.eps > 0n) {
+      if (emissionsEnabled && isEmissionActive(backstopEmissions, nowSeconds) && backstopEmissions) {
         const { tokens } = backstopPool.poolBalance;
         const eps = backstopEmissions.eps;
         const epsDecimals = backstopEmissions.epsDecimals;
@@ -594,7 +611,7 @@ async function captureTodayEmissionApy(): Promise<void> {
 
         // Supply emissions
         const supplyEmissions = reserve.supplyEmissions;
-        if (supplyEmissions && supplyEmissions.eps > 0n) {
+        if (emissionsEnabled && isEmissionActive(supplyEmissions, nowSeconds) && supplyEmissions) {
           const bSupply = reserve.totalSupply(); // returns bigint
           const eps = supplyEmissions.eps;
 
@@ -643,7 +660,7 @@ async function captureTodayEmissionApy(): Promise<void> {
 
         // Borrow emissions
         const borrowEmissions = reserve.borrowEmissions;
-        if (borrowEmissions && borrowEmissions.eps > 0n) {
+        if (emissionsEnabled && isEmissionActive(borrowEmissions, nowSeconds) && borrowEmissions) {
           const dSupply = reserve.totalLiabilities(); // returns bigint
           const eps = borrowEmissions.eps;
 
