@@ -20,6 +20,7 @@
  *   npx ts-node src/scripts/backfill-v2-1.ts            # dry-run estimates only
  *   npx ts-node src/scripts/backfill-v2-1.ts --run      # estimates, then backfill
  *   npx ts-node src/scripts/backfill-v2-1.ts --run --only parsed_events,lp_prices
+ *   npx ts-node src/scripts/backfill-v2-1.ts --run --only parsed_events,backstop_events --from 2026-11-06
  */
 
 import dotenv from "dotenv";
@@ -62,7 +63,7 @@ import { LpPriceBackfillService } from "../services/lp-price-backfill";
 import { BACKSTOP_V2_1, LP_TOKEN_V1_1 } from "../lib/blend/backstops";
 
 const POOL_V2_1 = "CBAKAZUEJBAFA2DCGBRS2WKJT3FNIMJBHTFL76AY7XMAVEINQNNIQWAO";
-const START_DATE = "2026-09-16";
+const DEFAULT_START_DATE = "2026-09-16";
 
 function isoDate(d: Date): string {
   return d.toISOString().split("T")[0];
@@ -70,6 +71,10 @@ function isoDate(d: Date): string {
 
 async function main() {
   const run = process.argv.includes("--run");
+  // `--from YYYY-MM-DD` narrows a top-up rerun (default: V2.1 deployment window)
+  const fromIdx = process.argv.indexOf("--from");
+  const START_DATE = fromIdx !== -1 ? process.argv[fromIdx + 1] : DEFAULT_START_DATE;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(START_DATE ?? "")) throw new Error(`Invalid --from date: ${START_DATE}`);
   const startedAt = new Date();
   const today = isoDate(startedAt);
   const yesterday = isoDate(new Date(startedAt.getTime() - 86_400_000));
