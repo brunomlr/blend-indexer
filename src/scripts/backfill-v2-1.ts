@@ -83,6 +83,8 @@ async function main() {
   // Date semantics differ per service: actions/backstop/pool snapshots use an
   // inclusive DATE(closed_at) <= endDate; q4w and LP use closed_at < endDate.
   const actionsParams = { poolIds: [POOL_V2_1], startDate: START_DATE, endDate: today, skipConfirmation: true };
+  // Flash loans only (added to ingestion later than the other pool events)
+  const flashLoanParams = { ...actionsParams, actionTypes: ["flash_loan"] };
   const backstopParams = { backstopContract: BACKSTOP_V2_1, startDate: START_DATE, endDate: today, skipConfirmation: true };
   const poolSnapParams = { poolId: POOL_V2_1, startDate: START_DATE, endDate: yesterday, skipConfirmation: true };
   const q4wParams = { backstopContract: BACKSTOP_V2_1, poolAddress: POOL_V2_1, startDate: START_DATE, endDate: today, skipConfirmation: true };
@@ -96,6 +98,9 @@ async function main() {
     { name: "parsed_events",
       estimate: async () => (await bigQueryActionsBackfillService.getCostEstimate(actionsParams)).bytes,
       run: () => bigQueryActionsBackfillService.runBackfill(actionsParams) },
+    { name: "flash_loans",
+      estimate: async () => (await bigQueryActionsBackfillService.getCostEstimate(flashLoanParams)).bytes,
+      run: () => bigQueryActionsBackfillService.runBackfill(flashLoanParams) },
     { name: "backstop_events",
       estimate: async () => (await bigQueryBackstopBackfillService.getCostEstimate(backstopParams)).bytes,
       run: () => bigQueryBackstopBackfillService.runBackfill(backstopParams) },

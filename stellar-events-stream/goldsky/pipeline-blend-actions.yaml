@@ -241,6 +241,7 @@ transforms:
               'supply', 'withdraw',
               'supply_collateral', 'withdraw_collateral',
               'borrow', 'repay',
+              'flash_loan',
               'claim',
               'new_auction',
               'fill_auction'

@@ -27,6 +27,10 @@ const ACTION_TYPES = [
   'withdraw_collateral',
   'borrow',
   'repay',
+  // Flash loan: a borrow (dTokens minted to `from`) whose proceeds go to a
+  // receiver contract. Same shape as borrow: topics [sym, asset, from, contract],
+  // data [underlying, dTokens].
+  'flash_loan',
   'claim',
   // Auction events (liquidation, bad_debt, interest)
   // auction_type in topics[1]: 0=liquidation, 1=bad_debt, 2=interest
@@ -37,6 +41,8 @@ const ACTION_TYPES = [
 export interface ActionsBackfillParams {
   /** Optional subset of tracked pools (default: all tracked pools) */
   poolIds?: string[];
+  /** Optional subset of action types (default: all ACTION_TYPES) */
+  actionTypes?: string[];
   startLedger?: number;
   endLedger?: number;
   startDate?: string;
@@ -97,7 +103,12 @@ export class BigQueryActionsBackfillService {
       throw new Error(`Not tracked pools: ${unknown.join(', ')}`);
     }
     const poolsInClause = pools.map(p => `'${this.escapeSqlString(p)}'`).join(', ');
-    const actionsInClause = ACTION_TYPES.map(a => `'${a}'`).join(', ');
+    const actions = params.actionTypes && params.actionTypes.length > 0 ? params.actionTypes : ACTION_TYPES;
+    const unknownActions = actions.filter(a => !ACTION_TYPES.includes(a));
+    if (unknownActions.length > 0) {
+      throw new Error(`Unknown action types: ${unknownActions.join(', ')}`);
+    }
+    const actionsInClause = actions.map(a => `'${a}'`).join(', ');
 
     // Build WHERE filters
     const filters: string[] = [
